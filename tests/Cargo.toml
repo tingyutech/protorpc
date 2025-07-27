@@ -1,0 +1,13 @@
+[package]
+name = "protorpc-tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+protorpc = { workspace = true, features = [] }
+anyhow = "1.0.98"
+prost = "0.14.1"
+tokio = { version = "1", features = ["full"] }
+
+[build-dependencies]
+protorpc-build = { workspace = true }

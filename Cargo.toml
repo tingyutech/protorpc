@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+    "./protorpc", 
+    "./protorpc-build", 
+    "./tests"
+]
+
+[workspace.dependencies]
+protorpc = { path = "./protorpc" }
+protorpc-build = { path = "./protorpc-build" }
