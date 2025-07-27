@@ -33,10 +33,10 @@ Add the following to your `Cargo.toml`:
 ```toml
 [dependencies]
 prost = "0.14.1"
-protorpc = { git = "git@git.flam.dev:yinpan/airport.git", branch = "master" }
+protorpc = { git = "https://github.com/tingyutech/protorpc", branch = "0.1.0" }
 
 [build-dependencies]
-protorpc-build = { git = "git@git.flam.dev:yinpan/airport.git", branch = "master" }
+protorpc-build = { git = "https://github.com/tingyutech/protorpc", branch = "0.1.0" }
 ```
 
 For more usage examples, please refer to the `tests` directory in the project.
