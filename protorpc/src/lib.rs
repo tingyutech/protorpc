@@ -13,9 +13,6 @@ use rand::seq::IteratorRandom;
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
 
-#[cfg(feature = "log")]
-use log;
-
 use std::{
     collections::HashMap,
     num::NonZeroUsize,
@@ -34,8 +31,15 @@ use tokio::{
     },
 };
 
+#[macro_export]
+macro_rules! include_proto {
+    ($package: tt) => {
+        include!(concat!(env!("OUT_DIR"), concat!("/", $package, ".rs")));
+    };
+}
+
 mod proto {
-    include!(concat!(env!("OUT_DIR"), "/airport.core.rs"));
+    include_proto!("airport.core");
 }
 
 // Transport layer sequence number cursor

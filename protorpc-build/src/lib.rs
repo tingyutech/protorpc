@@ -48,3 +48,9 @@ pub fn compile_protos(protos: &[impl AsRef<Path>], includes: &[impl AsRef<Path>]
         .service_generator(Box::new(AirportService::default()))
         .compile_protos(protos, includes)
 }
+
+pub fn configure() -> Config {
+    let mut config = Config::new();
+    config.service_generator(Box::new(AirportService::default()));
+    config
+}
