@@ -106,13 +106,13 @@ pub fn make_server(service: &Service) -> TokenStream {
             }
         }
 
-        impl<T: #service_handler_name> protorpc::RpcService for #service_name<T> {
+        impl<T: #service_handler_name> protorpc::RpcServiceBuilder for #service_name<T> {
             const NAME: &'static str = #service_attr;
 
             type Context = T;
             type Output = ();
 
-            fn with_transport(ctx: Self::Context, transport: protorpc::RpcTransport) {
+            fn build(ctx: Self::Context, transport: protorpc::transport::IOStream) {
                 protorpc::server::startup_server(Self(ctx), transport)
             }
         }

@@ -94,16 +94,20 @@ pub fn make_client(service: &Service) -> TokenStream {
 
         impl #service_name {
             #(#methods)*
+
+            fn with_transport(transport: protorpc::transport::IOStream) -> Self {
+                Self(protorpc::client::ClientCore::new(transport))
+            }
         }
 
-        impl protorpc::RpcService for #service_name {
+        impl protorpc::RpcServiceBuilder for #service_name {
             const NAME: &'static str = #service_attr;
 
             type Context = ();
             type Output = Self;
 
-            fn with_transport(_: Self::Context, transport: protorpc::RpcTransport) -> Self {
-                Self(protorpc::client::ClientCore::new(transport))
+            fn build(_: Self::Context, transport: protorpc::transport::IOStream) -> Self {
+                Self::with_transport(transport)
             }
         }
     }

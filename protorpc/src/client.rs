@@ -10,7 +10,7 @@ use tokio::sync::{
 
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
-use crate::{RpcTransport, Stream, proto};
+use crate::{Stream, proto, transport::IOStream};
 
 #[derive(Debug, Error)]
 pub enum RequestError {
@@ -36,10 +36,10 @@ pub struct ClientCore {
 
 impl ClientCore {
     pub fn new(
-        RpcTransport {
+        IOStream {
             receiver: mut readable_stream,
             sender: writable_stream,
-        }: RpcTransport,
+        }: IOStream,
     ) -> Self {
         let frame_handlers: Arc<RwLock<HashMap<String, UnboundedSender<proto::Frame>>>> =
             Default::default();

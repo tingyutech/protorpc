@@ -118,7 +118,7 @@ impl proto::server::EchoServiceHandler for EchoService {
 mod tests {
     use std::collections::HashMap;
 
-    use protorpc::Rpc;
+    use protorpc::routers::Routes;
     use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
@@ -126,26 +126,28 @@ mod tests {
     #[tokio::test]
     async fn test_integration() -> anyhow::Result<()> {
         {
+            let listener = TcpListener::bind("127.0.0.1:8088").await.unwrap();
+
             tokio::spawn(async move {
-                let listener = TcpListener::bind("127.0.0.1:8088").await.unwrap();
+                let routes = Routes::new();
 
-                let rpc = Rpc::new();
-
-                rpc.make_service::<proto::server::EchoService<EchoService>>(EchoService)
+                routes
+                    .make_service::<proto::server::EchoService<EchoService>>(EchoService)
                     .await;
 
                 while let Ok((sokcet, _)) = listener.accept().await {
-                    rpc.add_transport(sokcet).await;
+                    routes.add_transport(sokcet.into()).await;
                 }
             });
         }
 
-        let rpc = Rpc::new();
+        let routes = Routes::new();
 
-        rpc.add_transport(TcpStream::connect("127.0.0.1:8088").await?)
+        routes
+            .add_transport(TcpStream::connect("127.0.0.1:8088").await?.into())
             .await;
 
-        let client = rpc.make_service::<proto::client::EchoService>(()).await;
+        let client = routes.make_service::<proto::client::EchoService>(()).await;
 
         {
             let metadata = HashMap::from([("type".to_string(), "unary_echo".to_string())]);

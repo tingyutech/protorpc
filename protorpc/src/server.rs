@@ -5,7 +5,7 @@ use prost::Message;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
-use crate::{RpcTransport, Stream, proto, request::Request, response::Response};
+use crate::{Stream, proto, request::Request, response::Response, transport::IOStream};
 
 #[derive(Debug)]
 pub struct BaseRequest<T> {
@@ -100,10 +100,10 @@ pub trait ServerService {
 
 pub fn startup_server<T>(
     service: T,
-    RpcTransport {
+    IOStream {
         receiver: mut readable_stream,
         sender: writable_stream,
-    }: RpcTransport,
+    }: IOStream,
 ) where
     T: ServerService + Sync + Send + 'static,
     T::Error: Send,
