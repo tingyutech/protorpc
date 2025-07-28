@@ -7,9 +7,9 @@ use prost_build::{Config, Service, ServiceGenerator};
 use quote::quote;
 
 #[derive(Default)]
-struct AirportService {}
+struct ProtorpcService {}
 
-impl ServiceGenerator for AirportService {
+impl ServiceGenerator for ProtorpcService {
     fn generate(&mut self, service: Service, buf: &mut String) {
         let server = server::make_server(&service);
         let client = client::make_client(&service);
@@ -45,12 +45,12 @@ impl ServiceGenerator for AirportService {
 
 pub fn compile_protos(protos: &[impl AsRef<Path>], includes: &[impl AsRef<Path>]) -> Result<()> {
     Config::new()
-        .service_generator(Box::new(AirportService::default()))
+        .service_generator(Box::new(ProtorpcService::default()))
         .compile_protos(protos, includes)
 }
 
 pub fn configure() -> Config {
     let mut config = Config::new();
-    config.service_generator(Box::new(AirportService::default()));
+    config.service_generator(Box::new(ProtorpcService::default()));
     config
 }

@@ -141,7 +141,9 @@ mod tests {
         });
 
         let client = proto::client::EchoService::with_transport(
-            TcpStream::connect(format!("127.0.0.1:{}", port)).await?.into(),
+            TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await?
+                .into(),
         );
 
         {

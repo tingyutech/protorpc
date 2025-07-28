@@ -17,7 +17,7 @@ macro_rules! include_proto {
 }
 
 mod proto {
-    include_proto!("airport.core");
+    include_proto!("protorpc.core");
 }
 
 pub struct Stream<T: Send>(Box<dyn futures_core::Stream<Item = T> + Send + Unpin>);

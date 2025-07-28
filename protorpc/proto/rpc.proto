@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package airport.core;
+package protorpc.core;
 
 enum FrameFlags {
     None = 0;
