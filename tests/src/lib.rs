@@ -125,24 +125,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_integration() -> anyhow::Result<()> {
-        {
-            let listener = TcpListener::bind("127.0.0.1:8088").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
 
-            tokio::spawn(async move {
-                let routes = Routes::new();
+        tokio::spawn(async move {
+            let routes = Routes::new();
 
-                routes
-                    .make_service::<proto::server::EchoService<EchoService>>(EchoService)
-                    .await;
+            routes
+                .make_service::<proto::server::EchoService<EchoService>>(EchoService)
+                .await;
 
-                while let Ok((sokcet, _)) = listener.accept().await {
-                    routes.add_transport(sokcet.into()).await;
-                }
-            });
-        }
+            while let Ok((sokcet, _)) = listener.accept().await {
+                routes.add_transport(sokcet.into()).await;
+            }
+        });
 
         let client = proto::client::EchoService::with_transport(
-            TcpStream::connect("127.0.0.1:8088").await?.into(),
+            TcpStream::connect(format!("127.0.0.1:{}", port)).await?.into(),
         );
 
         {
