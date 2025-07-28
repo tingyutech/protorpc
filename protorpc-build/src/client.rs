@@ -95,7 +95,7 @@ pub fn make_client(service: &Service) -> TokenStream {
         impl #service_name {
             #(#methods)*
 
-            fn with_transport(transport: protorpc::transport::IOStream) -> Self {
+            pub fn with_transport(transport: protorpc::transport::IOStream) -> Self {
                 Self(protorpc::client::ClientCore::new(transport))
             }
         }

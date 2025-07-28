@@ -141,13 +141,9 @@ mod tests {
             });
         }
 
-        let routes = Routes::new();
-
-        routes
-            .add_transport(TcpStream::connect("127.0.0.1:8088").await?.into())
-            .await;
-
-        let client = routes.make_service::<proto::client::EchoService>(()).await;
+        let client = proto::client::EchoService::with_transport(
+            TcpStream::connect("127.0.0.1:8088").await?.into(),
+        );
 
         {
             let metadata = HashMap::from([("type".to_string(), "unary_echo".to_string())]);
