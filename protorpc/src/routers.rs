@@ -151,7 +151,7 @@ impl Routes {
         }
     }
 
-    pub async fn add_transport(
+    pub async fn add_stream(
         &self,
         IOStream {
             receiver: mut readable_stream,

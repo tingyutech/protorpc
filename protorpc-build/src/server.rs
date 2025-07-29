@@ -112,8 +112,8 @@ pub fn make_server(service: &Service) -> TokenStream {
             type Context = T;
             type Output = ();
 
-            fn build(ctx: Self::Context, transport: protorpc::transport::IOStream) {
-                protorpc::server::startup_server(Self(ctx), transport)
+            fn build(ctx: Self::Context, stream: protorpc::transport::IOStream) {
+                protorpc::server::startup_server(Self(ctx), stream)
             }
         }
     }

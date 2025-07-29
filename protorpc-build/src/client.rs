@@ -47,20 +47,20 @@ pub fn make_client(service: &Service) -> TokenStream {
                     payload
                     .next()
                     .await
-                    .ok_or_else(|| protorpc::client::RequestError::InvalidStream)?
+                    .ok_or_else(|| protorpc::client::Error::InvalidStream)?
                 }
             } else {
                 quote! { payload }
             };
 
             quote! {
-                let (mut payload, metadata) = self.0.stream::<#request_ty, #response_ty, _>(
-                    #service_attr,
-                    #method_attr,
-                    request.timeout,
-                    request.metadata,
-                    #req,
-                )
+                let (mut payload, metadata) = self.0.request(protorpc::client::BaseRequest {
+                    service: #service_attr,
+                    method: #method_attr,
+                    timeout: request.timeout,
+                    metadata: request.metadata,
+                    request: #req,
+                })
                 .await?;
 
                 Ok(protorpc::response::Response {
@@ -81,7 +81,7 @@ pub fn make_client(service: &Service) -> TokenStream {
             pub async fn #func #generics(
                 &self,
                 request: #request
-            ) -> std::result::Result<#response, protorpc::client::RequestError> {
+            ) -> std::result::Result<#response, protorpc::client::Error> {
                 #func_body
             }
         }
@@ -90,24 +90,32 @@ pub fn make_client(service: &Service) -> TokenStream {
     let service_name = format_ident!("{}Service", service.name);
 
     quote! {
-        pub struct #service_name(protorpc::client::ClientCore);
+        pub struct #service_name<T>(T);
 
-        impl #service_name {
+        impl<T: protorpc::client::RequestHandler> #service_name<T> {
             #(#methods)*
+        }
 
-            pub fn with_transport(transport: protorpc::transport::IOStream) -> Self {
-                Self(protorpc::client::ClientCore::new(transport))
+        impl #service_name<protorpc::client::Multiplexing> {
+            pub fn with_stream(stream: protorpc::transport::IOStream) -> Self {
+                Self(protorpc::client::Multiplexing::new(stream))
             }
         }
 
-        impl protorpc::RpcServiceBuilder for #service_name {
+        impl<T: protorpc::transport::Transport> #service_name<protorpc::client::Streaming<T>> {
+            pub fn with_transport(transport: T) -> Self {
+                Self(protorpc::client::Streaming::new(transport))
+            }
+        }
+
+        impl protorpc::RpcServiceBuilder for #service_name<protorpc::client::Multiplexing> {
             const NAME: &'static str = #service_attr;
 
             type Context = ();
             type Output = Self;
 
             fn build(_: Self::Context, transport: protorpc::transport::IOStream) -> Self {
-                Self::with_transport(transport)
+                Self::with_stream(transport)
             }
         }
     }

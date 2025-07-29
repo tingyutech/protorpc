@@ -1,3 +1,6 @@
+use std::fmt::Debug;
+
+use async_trait::async_trait;
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
 use tokio::{
@@ -8,8 +11,8 @@ use tokio::{
 use crate::proto;
 
 pub struct IOStream {
-    pub sender: UnboundedSender<proto::Frame>,
-    pub receiver: UnboundedReceiver<proto::Frame>,
+    pub(crate) sender: UnboundedSender<proto::Frame>,
+    pub(crate) receiver: UnboundedReceiver<proto::Frame>,
 }
 
 impl<T> From<T> for IOStream
@@ -54,15 +57,8 @@ where
                                         break 'a;
                                     }
                                 }
-                                #[allow(unused_variables)]
-                                Err(e) => {
-                                    #[cfg(feature = "log")]
-                                    log::error!(
-                                        "transport decode data to frame failed, number = {}, size = {}, error = {}",
-                                        sequence,
-                                        content_len,
-                                        e,
-                                    );
+                                Err(_) => {
+                                    break 'a;
                                 }
                             }
                         }
@@ -71,26 +67,17 @@ where
                         send_buffer.clear();
                         send_buffer.put_u32(0);
 
-                        #[allow(unused_variables)]
-                        if let Err(e) = frame.encode(&mut send_buffer) {
-                            #[cfg(feature = "log")]
-                            log::error!(
-                                "failed to encode frame, number = {}, frame = {:?}, error = {:?}",
-                                sequence,
-                                frame,
-                                e,
-                            );
-                        } else {
-                            {
-                                let size = send_buffer.len() as u32 - 4;
-                                send_buffer[..4].copy_from_slice(size.to_be_bytes().as_ref());
-                            }
+                        frame.encode(&mut send_buffer).unwrap();
 
-                            if transport.write_all(&send_buffer).await.is_err() {
-                                break 'a;
-                            } else {
-                                let _ = transport.flush().await;
-                            }
+                        {
+                            let size = send_buffer.len() as u32 - 4;
+                            send_buffer[..4].copy_from_slice(size.to_be_bytes().as_ref());
+                        }
+
+                        if transport.write_all(&send_buffer).await.is_err() {
+                            break;
+                        } else {
+                            let _ = transport.flush().await;
                         }
                     }
                     else => {
@@ -102,4 +89,11 @@ where
 
         Self { sender, receiver }
     }
+}
+
+#[async_trait]
+pub trait Transport: Send + Sync {
+    type Error: Debug;
+
+    async fn create_stream(&self, id: &str) -> Result<IOStream, Self::Error>;
 }

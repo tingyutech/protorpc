@@ -136,11 +136,11 @@ mod tests {
                 .await;
 
             while let Ok((sokcet, _)) = listener.accept().await {
-                routes.add_transport(sokcet.into()).await;
+                routes.add_stream(sokcet.into()).await;
             }
         });
 
-        let client = proto::client::EchoService::with_transport(
+        let client = proto::client::EchoService::with_stream(
             TcpStream::connect(format!("127.0.0.1:{}", port))
                 .await?
                 .into(),
