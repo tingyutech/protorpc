@@ -96,19 +96,19 @@ pub fn make_client(service: &Service) -> TokenStream {
             #(#methods)*
         }
 
-        impl #service_name<protorpc::client::Multiplexing> {
+        impl #service_name<protorpc::client::multiplex::Multiplex> {
             pub fn with_stream(stream: protorpc::transport::IOStream) -> Self {
-                Self(protorpc::client::Multiplexing::new(stream))
+                Self(protorpc::client::multiplex::Multiplex::new(stream))
             }
         }
 
-        impl<T: protorpc::transport::Transport> #service_name<protorpc::client::Streaming<T>> {
+        impl<T: protorpc::transport::Transport> #service_name<protorpc::client::streaming::Streaming<T>> {
             pub fn with_transport(transport: T) -> Self {
-                Self(protorpc::client::Streaming::new(transport))
+                Self(protorpc::client::streaming::Streaming::new(transport))
             }
         }
 
-        impl protorpc::RpcServiceBuilder for #service_name<protorpc::client::Multiplexing> {
+        impl protorpc::RpcServiceBuilder for #service_name<protorpc::client::multiplex::Multiplex> {
             const NAME: &'static str = #service_attr;
 
             type Context = ();
