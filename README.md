@@ -1,28 +1,8 @@
-# Project Overview
+# ProtoRPC
 
-This project is an internal Rust RPC (Remote Procedure Call) library developed for high-performance, easy-to-use, and transport-agnostic RPC capabilities in microservice architectures. The library supports automatic code generation for both client and server, greatly improving development efficiency.
+## Project Overview
 
-## Key Features
-
--   **Transport Agnostic**: Easily adaptable to different network transport protocols.
--   **Code Generation**: Supports automatic generation of client and server code from proto files.
--   **High Performance**: Built with Rust, offering excellent performance and memory safety.
--   **Easy Integration**: Suitable for various microservice scenarios and easy to integrate with existing systems.
-
-## Directory Structure
-
-```
-protorpc/
-  ├── protorpc/           # Core RPC library
-  │   ├── src/            # Core implementation (client/server/request/response)
-  │   ├── proto/          # Proto file definitions
-  │   └── build.rs        # Build script
-  ├── protorpc-build/     # Code generation tools
-  │   ├── src/            # Generator implementation
-  │   └── Cargo.toml      # Dependency configuration
-  ├── tests/              # Test cases and examples
-  └── README.md           # Project documentation
-```
+This is an RPC framework similar to tonic, but unlike tonic, it does not rely on gRPC. Instead, it uses protobuf as the RPC protocol and is not tied to any transport layer.
 
 ## Quick Start
 
