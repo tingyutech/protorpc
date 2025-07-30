@@ -87,7 +87,7 @@ pub fn make_client(service: &Service) -> TokenStream {
         }
     });
 
-    let service_name = format_ident!("{}Service", service.name);
+    let service_name = format_ident!("{}Client", service.name);
 
     quote! {
         pub struct #service_name<T>(T);

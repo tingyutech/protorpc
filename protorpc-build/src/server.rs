@@ -72,10 +72,8 @@ pub fn make_server(service: &Service) -> TokenStream {
         }
     });
 
-    // Add `Service` after the service name, e.g., the generated name for
-    // the `Echo` service is `EchoService`.
-    let service_handler_name = format_ident!("{}ServiceHandler", service.name);
-    let service_name = format_ident!("{}Service", service.name);
+    let service_handler_name = format_ident!("{}ServerHandler", service.name);
+    let service_name = format_ident!("{}Server", service.name);
     let service_attr = service.proto_name.clone();
 
     quote! {

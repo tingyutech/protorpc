@@ -13,7 +13,7 @@ mod proto {
 pub struct EchoService;
 
 #[protorpc::async_trait]
-impl proto::server::EchoServiceHandler for EchoService {
+impl proto::server::EchoServerHandler for EchoService {
     type Error = anyhow::Error;
 
     async fn unary_echo(
@@ -132,7 +132,7 @@ mod tests {
             let routes = Routes::new();
 
             routes
-                .make_service::<proto::server::EchoService<EchoService>>(EchoService)
+                .make_service::<proto::server::EchoServer<EchoService>>(EchoService)
                 .await;
 
             while let Ok((sokcet, _)) = listener.accept().await {
@@ -140,7 +140,7 @@ mod tests {
             }
         });
 
-        let client = proto::client::EchoService::with_stream(
+        let client = proto::client::EchoClient::with_stream(
             TcpStream::connect(format!("127.0.0.1:{}", port))
                 .await?
                 .into(),
