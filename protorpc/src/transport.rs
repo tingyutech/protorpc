@@ -1,3 +1,5 @@
+//! Transport layer related types
+
 use std::fmt::Debug;
 
 use async_trait::async_trait;
@@ -10,6 +12,7 @@ use tokio::{
 
 use crate::proto;
 
+/// A wrapper for the input/output stream
 pub struct IOStream {
     pub(crate) sender: UnboundedSender<proto::Frame>,
     pub(crate) receiver: UnboundedReceiver<proto::Frame>,
@@ -91,6 +94,14 @@ where
     }
 }
 
+/// A trait for the transport layer
+///
+/// If the RPC service needs to create a new stream internally, it will call the
+/// external implementation through this trait.
+///
+/// The external implementation can decide how to create the stream based on the
+/// stream's ID. When returning, any type that implements `AsyncRead` and
+/// `AsyncWrite` can be converted into an `IOStream`, such as `TcpStream`.
 #[async_trait]
 pub trait Transport: Send + Sync {
     type Error: Debug;

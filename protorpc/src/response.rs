@@ -1,3 +1,26 @@
+//! Rpc Response
+//!
+//! For example:
+//!
+//! ```rust,ignore
+//! mod pb {
+//!     protorpc::include_proto!("helloworld");
+//! }
+//!
+//! let response = Response::from(pb::helloworld::HelloResponse {
+//!     name: "world".to_string(),
+//! });
+//!
+//! let response_stream = Response::from(tokio_stream::iter(vec![
+//!     pb::helloworld::HelloResponse {
+//!         name: "world".to_string(),
+//!     },
+//!     pb::helloworld::HelloResponse {
+//!         name: "world".to_string(),
+//!     },
+//! ]));
+//! ```
+
 use std::{collections::HashMap, ops::Deref};
 
 use prost::Message;
@@ -6,26 +29,35 @@ use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
 use crate::Stream;
 
+/// Represents a response
 pub struct Response<T> {
+    /// The payload of the response
     pub payload: T,
+    /// The metadata of the response
     pub metadata: HashMap<String, String>,
 }
 
 impl<T> Response<T> {
+    /// Consumes `self`, returning the payload.
     pub fn into_inner(self) -> T {
         self.payload
     }
 
+    /// Set the custom response metadata.
     pub fn set_metadata(&mut self, metadata: HashMap<String, String>) {
         self.metadata = metadata;
     }
 
+    /// Get a reference to the custom response metadata.
     pub fn get_metadata(&self) -> &HashMap<String, String> {
         &self.metadata
     }
 }
 
 impl<T: Message> Response<T> {
+    /// Convert the response to a once response.
+    ///
+    /// This is only used internally and should not concern external users.
     pub fn into_once(self) -> Response<Stream<Vec<u8>>> {
         Response {
             payload: Stream::once(self.payload.encode_to_vec()),
@@ -39,6 +71,9 @@ where
     T: Message + Unpin + 'static,
     S: futures_core::Stream<Item = T> + Unpin + Send + 'static,
 {
+    /// Convert the response to a stream response.
+    ///
+    /// This is only used internally and should not concern external users.
     pub fn into_stream(mut self) -> Response<Stream<Vec<u8>>> {
         let (tx, rx) = unbounded_channel::<Vec<u8>>();
         tokio::spawn(async move {

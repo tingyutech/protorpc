@@ -1,11 +1,10 @@
+pub mod exclusive;
 pub mod multiplex;
-pub mod streaming;
 
 use std::{collections::HashMap, time::Duration};
 
 use async_trait::async_trait;
 use prost::Message;
-use thiserror::Error;
 use tokio::sync::{
     mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     oneshot,
@@ -13,28 +12,14 @@ use tokio::sync::{
 
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
-use crate::{Stream, proto};
+use crate::{Error, Stream, proto};
 
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("transport terminated")]
-    Terminated,
-    #[error("request timeout")]
-    Timeout,
-    #[error("core service shutdown")]
-    Shutdown,
-    #[error("invalid response: {0}")]
-    InvalidResponse(#[from] prost::DecodeError),
-    #[error("invalid response stream")]
-    InvalidStream,
-    #[error("error response: {0}")]
-    ErrorResponse(String),
-    #[error("transport response: {0}")]
-    Transport(String),
-}
-
+/// Request handler trait
 #[async_trait]
 pub trait RequestHandler {
+    /// Handle request
+    ///
+    /// This method is used internally and should not concern external users.
     async fn request<T, Q, S>(
         &self,
         base_request: BaseRequest<'_, T>,
@@ -45,6 +30,9 @@ pub trait RequestHandler {
         T: futures_core::Stream<Item = Q> + Unpin + Send + 'static;
 }
 
+/// Basic request information
+///
+/// This type is used internally and should not concern external users.
 pub struct BaseRequest<'a, T> {
     pub service: &'a str,
     pub method: &'a str,

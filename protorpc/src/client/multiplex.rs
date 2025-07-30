@@ -15,6 +15,7 @@ use crate::{
     transport::IOStream,
 };
 
+/// Multiplexing implementation
 pub struct Multiplex {
     output_frame_sender: UnboundedSender<proto::Frame>,
     frame_handlers: Arc<RwLock<HashMap<String, UnboundedSender<proto::Frame>>>>,

@@ -47,7 +47,7 @@ pub fn make_client(service: &Service) -> TokenStream {
                     payload
                     .next()
                     .await
-                    .ok_or_else(|| protorpc::client::Error::InvalidStream)?
+                    .ok_or_else(|| protorpc::Error::InvalidStream)?
                 }
             } else {
                 quote! { payload }
@@ -81,7 +81,7 @@ pub fn make_client(service: &Service) -> TokenStream {
             pub async fn #func #generics(
                 &self,
                 request: #request
-            ) -> std::result::Result<#response, protorpc::client::Error> {
+            ) -> std::result::Result<#response, protorpc::Error> {
                 #func_body
             }
         }
@@ -102,9 +102,9 @@ pub fn make_client(service: &Service) -> TokenStream {
             }
         }
 
-        impl<T: protorpc::transport::Transport> #service_name<protorpc::client::streaming::Streaming<T>> {
+        impl<T: protorpc::transport::Transport> #service_name<protorpc::client::exclusive::Exclusive<T>> {
             pub fn with_transport(transport: T) -> Self {
-                Self(protorpc::client::streaming::Streaming::new(transport))
+                Self(protorpc::client::exclusive::Exclusive::new(transport))
             }
         }
 
