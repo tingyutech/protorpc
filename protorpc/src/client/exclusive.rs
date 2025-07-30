@@ -10,16 +10,17 @@ use crate::{
     transport::{IOStream, Transport},
 };
 
-pub struct Streaming<F>(F);
+/// Exclusive stream implementation
+pub struct Exclusive<F>(F);
 
-impl<F> Streaming<F> {
+impl<F> Exclusive<F> {
     pub fn new(transport: F) -> Self {
         Self(transport)
     }
 }
 
 #[async_trait]
-impl<F> RequestHandler for Streaming<F>
+impl<F> RequestHandler for Exclusive<F>
 where
     F: Transport,
 {
@@ -32,6 +33,8 @@ where
         S: Message + Unpin + Default + 'static,
         T: futures_core::Stream<Item = Q> + Unpin + Send + 'static,
     {
+        // Let the external transport layer create an independent stream for the
+        // current request.
         let id = nanoid!();
         let IOStream { receiver, sender } = self
             .0

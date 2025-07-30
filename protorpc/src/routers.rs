@@ -1,3 +1,49 @@
+//! Handles routing RPC requests and responses
+//!
+//! A router can manage multiple services (both client and server) and multiple
+//! transport layer streams at the same time.
+//!
+//! ### Service
+//!
+//! ```rust,ignore
+//! let routes = Routes::new();
+//!
+//! routes.add_stream(stream).await;
+//! routes.make_service::<proto::server::EchoServer<EchoService>>(EchoService).await;
+//! ```
+//!
+//! For the server, routes is required, and the rpc server implementation must
+//! be managed through routes. But that's not all, the client can also be
+//! managed through routes, in which case the client uses the streams in the
+//! transport stream pool.
+//!
+//! ```rust,ignore
+//! let client = routes.make_service::<proto::client::EchoClient>(()).await;
+//! ```
+//!
+//! ### Transport Layer
+//!
+//! routes can unconditionally accept any stream. You don't need to worry about
+//! anything else, just add the stream to routes.
+//!
+//! For example, you can add a TCP stream to routes.
+//!
+//! ```rust,ignore
+//! routes.add_stream(TcpStream::connect("127.0.0.1:8080")
+//!               .await?
+//!               .into()).await;
+//! ```
+//!
+//! For the server:
+//!
+//! ```rust,ignore
+//! let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+//!
+//! while let Ok((socket, _)) = listener.accept().await {
+//!     routes.add_stream(socket.into()).await;
+//! }
+//! ```
+
 use lru::LruCache;
 use rand::seq::IteratorRandom;
 
@@ -20,6 +66,7 @@ use crate::{RpcServiceBuilder, proto, transport::IOStream};
 // Transport layer sequence number cursor
 static TRASNPORT_NUMBER: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
 
+/// Request/Response Router
 pub struct Routes {
     drop_notify_sender: tokio::sync::broadcast::Sender<()>,
     drop_notify_receiver: tokio::sync::broadcast::Receiver<()>,
@@ -151,6 +198,7 @@ impl Routes {
         }
     }
 
+    /// Add a transport layer stream, used to receive and send data.
     pub async fn add_stream(
         &self,
         IOStream {
@@ -228,6 +276,7 @@ impl Routes {
         });
     }
 
+    /// Build a service.
     pub async fn make_service<S: RpcServiceBuilder + Send + Sync + 'static>(
         &self,
         ctx: S::Context,
