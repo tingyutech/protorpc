@@ -5,6 +5,7 @@ on:
             - main
             - 0.1.0
         paths:
+            - .github/**
             - protorpc/**
             - protorpc-build/**
             - tests/**
