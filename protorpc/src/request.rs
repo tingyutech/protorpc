@@ -69,6 +69,10 @@ impl<T> Request<T> {
     pub fn get_metadata(&self) -> &HashMap<String, String> {
         &self.metadata
     }
+
+    pub fn metadata_mut(&mut self) -> &mut HashMap<String, String> {
+        &mut self.metadata
+    }
 }
 
 impl<T> Deref for Request<T> {
