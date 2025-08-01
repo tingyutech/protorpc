@@ -60,7 +60,7 @@ use tokio::sync::{
     mpsc::{UnboundedSender, unbounded_channel},
 };
 
-use crate::{RpcServiceBuilder, proto, transport::IOStream};
+use crate::{RpcServiceBuilder, proto, task::spawn, transport::IOStream};
 
 // Transport layer sequence number cursor
 static TRASNPORT_NUMBER: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
@@ -107,7 +107,7 @@ impl Routes {
             let transport_senders_ = transport_senders.clone();
             let mut drop_notify_receiver_ = drop_notify_receiver.resubscribe();
 
-            tokio::spawn(async move {
+            spawn(async move {
                 loop {
                     tokio::select! {
                         Some(frame) = output_bus_receiver.recv() => {
@@ -224,7 +224,7 @@ impl Routes {
             sequence
         );
 
-        tokio::spawn(async move {
+        spawn(async move {
             loop {
                 tokio::select! {
                     Some(frame) = readable_stream.recv() => {

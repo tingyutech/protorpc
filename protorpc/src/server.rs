@@ -5,7 +5,9 @@ use prost::Message;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
-use crate::{Stream, proto, request::Request, response::Response, transport::IOStream};
+use crate::{
+    Stream, proto, request::Request, response::Response, task::spawn, transport::IOStream,
+};
 
 #[derive(Debug)]
 pub struct BaseRequest<T> {
@@ -28,7 +30,7 @@ impl BaseRequest<Stream<Vec<u8>>> {
     pub fn into_stream<T: Message + Unpin + Default + 'static>(mut self) -> Request<Stream<T>> {
         let (tx, rx) = unbounded_channel::<T>();
 
-        tokio::spawn(async move {
+        spawn(async move {
             while let Some(buf) = self.payload.next().await {
                 if let Ok(message) = T::decode(buf.as_ref()) {
                     if tx.send(message).is_err() {
@@ -113,7 +115,7 @@ pub fn startup_server<T>(
 {
     let service = Arc::new(service);
     let (frame_sender, mut frame_receiver) = unbounded_channel::<proto::Frame>();
-    tokio::spawn(async move {
+    spawn(async move {
         while let Some(frame) = frame_receiver.recv().await {
             if writable_stream.send(frame).is_err() {
                 break;
@@ -121,7 +123,7 @@ pub fn startup_server<T>(
         }
     });
 
-    tokio::spawn(async move {
+    spawn(async move {
         let mut adapter = RequestFrameAdapter::default();
 
         while let Some(frame) = readable_stream.recv().await {
@@ -129,7 +131,7 @@ pub fn startup_server<T>(
                 let service = service.clone();
                 let frame_sender_ = frame_sender.clone();
 
-                tokio::spawn(async move {
+                spawn(async move {
                     let mut frame = proto::Frame {
                         id_high: (request.order_id >> 64) as u64,
                         id_low: (request.order_id & 0xFFFFFFFFFFFFFFFF) as u64,

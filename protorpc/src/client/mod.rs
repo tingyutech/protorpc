@@ -1,18 +1,27 @@
 pub mod exclusive;
 pub mod multiplex;
 
-use std::{collections::HashMap, time::Duration};
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use prost::Message;
-use tokio::sync::{
-    mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    oneshot,
+use tokio::{
+    sync::{
+        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+        oneshot,
+    },
+    time::Duration,
 };
 
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
-use crate::{Error, Stream, proto};
+#[cfg(not(target_family = "wasm"))]
+use tokio::time::timeout;
+
+#[cfg(target_family = "wasm")]
+use wasmtimer::tokio::timeout;
+
+use crate::{Error, Stream, proto, task::spawn};
 
 /// Request handler trait
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
@@ -108,7 +117,7 @@ impl<'a, T> BaseRequest<'a, T> {
         {
             let output_frame_sender = writable_stream.clone();
 
-            tokio::spawn(async move {
+            spawn(async move {
                 while let Some(payload) = self.request.next().await {
                     #[cfg(feature = "log")]
                     log::debug!(
@@ -155,7 +164,7 @@ impl<'a, T> BaseRequest<'a, T> {
 
         let mut response_header_sender = Some(response_header_sender);
 
-        tokio::spawn(async move {
+        spawn(async move {
             while let Some(frame) = readable_stream.recv().await {
                 #[cfg(feature = "log")]
                 log::debug!("client core received a response frame, frame = {:?}", frame);
@@ -209,7 +218,7 @@ impl<'a, T> BaseRequest<'a, T> {
         });
 
         // try it the result
-        let metadata = tokio::time::timeout(self.timeout, response_header_receiver)
+        let metadata = timeout(self.timeout, response_header_receiver)
             .await
             .map_err(|_| Error::Timeout)?
             .map_err(|_| Error::Shutdown)??;
