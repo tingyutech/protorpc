@@ -45,7 +45,6 @@
 //! ```
 
 use lru::LruCache;
-use rand::seq::IteratorRandom;
 
 use std::{
     collections::HashMap,
@@ -84,7 +83,7 @@ pub struct Routes {
     //
     // The response to a request received by a certain transport layer must also
     // be sent to this transport layer
-    lru: Arc<Mutex<LruCache<String /* frame order id */, u32 /* transport sequence */>>>,
+    lru: Arc<Mutex<LruCache<u128 /* frame order id */, u32 /* transport sequence */>>>,
 }
 
 impl Routes {
@@ -95,7 +94,7 @@ impl Routes {
         let transport_senders: Arc<RwLock<HashMap<u32, UnboundedSender<proto::Frame>>>> =
             Default::default();
 
-        let lru = Arc::new(Mutex::new(LruCache::<String, u32>::new(
+        let lru = Arc::new(Mutex::new(LruCache::<u128, u32>::new(
             NonZeroUsize::new(100).unwrap(),
         )));
 
@@ -112,13 +111,15 @@ impl Routes {
                 loop {
                     tokio::select! {
                         Some(frame) = output_bus_receiver.recv() => {
+                            let id = frame.order_number();
+
                             #[cfg(feature = "log")]
                             log::debug!("routers bus forwarding task received a frame, frame = {:?}", frame);
 
                             let sequence = {
                                 let mut lru = lru_.lock().await;
 
-                                if let Some(sequence) = lru.get(&frame.order_id).copied() {
+                                if let Some(sequence) = lru.get(&id).copied() {
                                     sequence
                                 } else {
                                     if let Some(proto::frame::Payload::RequestHeader(_)) = frame.payload
@@ -129,15 +130,14 @@ impl Routes {
                                         //
                                         // Because this means the request header
                                         // was sent by the client and is not recorded.
-                                        let index = transport_senders_
-                                            .read()
-                                            .await
-                                            .keys()
-                                            .choose(&mut rand::rng())
-                                            .copied()
-                                            .unwrap_or(0);
+                                        let index = {
+                                            let transport_senders = transport_senders_.read().await;
+                                            let mut keys = transport_senders.keys();
+                                            let index = fastrand::usize(0..keys.len());
+                                            keys.nth(index).copied().unwrap_or(0)
+                                        };
 
-                                        lru.push(frame.order_id.clone(), index);
+                                        lru.push(id, index);
 
                                         #[cfg(feature = "log")]
                                         log::debug!(
@@ -238,7 +238,7 @@ impl Routes {
                         // number with the current transport layer and record
                         // it in the lru
                         if let Some(proto::frame::Payload::RequestHeader(_)) = frame.payload {
-                            lru.lock().await.push(frame.order_id.clone(), sequence);
+                            lru.lock().await.push(frame.order_number(), sequence);
                         }
 
                         let mut closed_service = None;

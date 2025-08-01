@@ -46,7 +46,7 @@ impl<'a, T> BaseRequest<'a, T> {
         mut self,
         writable_stream: UnboundedSender<proto::Frame>,
         mut readable_stream: UnboundedReceiver<proto::Frame>,
-        order_id: String,
+        order_id: u128,
     ) -> Result<(Stream<S>, HashMap<String, String>), Error>
     where
         Q: Message,
@@ -63,11 +63,12 @@ impl<'a, T> BaseRequest<'a, T> {
         // The overall process actually simulates HTTP, but with some differences.
 
         let mut frame = proto::Frame {
+            id_high: (order_id >> 64) as u64,
+            id_low: (order_id & 0xFFFFFFFFFFFFFFFF) as u64,
             service: self.service.to_string(),
             method: self.method.to_string(),
             payload: None,
             flags: 0,
-            order_id,
         };
 
         // Response data stream channel.
