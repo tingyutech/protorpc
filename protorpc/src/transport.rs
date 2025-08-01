@@ -10,7 +10,7 @@ use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
 
-use crate::proto;
+use crate::{proto, task::spawn};
 
 /// A wrapper for the input/output stream
 pub struct IOStream {
@@ -26,7 +26,7 @@ where
         let (sender, mut output_receiver) = unbounded_channel::<proto::Frame>();
         let (input_sender, receiver) = unbounded_channel::<proto::Frame>();
 
-        tokio::spawn(async move {
+        spawn(async move {
             let mut read_buffer = BytesMut::new();
             let mut send_buffer = BytesMut::new();
 
@@ -102,9 +102,10 @@ where
 /// The external implementation can decide how to create the stream based on the
 /// stream's ID. When returning, any type that implements `AsyncRead` and
 /// `AsyncWrite` can be converted into an `IOStream`, such as `TcpStream`.
-#[async_trait]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 pub trait Transport: Send + Sync {
     type Error: Debug;
 
-    async fn create_stream(&self, id: &str) -> Result<IOStream, Self::Error>;
+    async fn create_stream(&self, id: u128) -> Result<IOStream, Self::Error>;
 }

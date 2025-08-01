@@ -27,7 +27,7 @@ use prost::Message;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
-use crate::Stream;
+use crate::{Stream, task::spawn};
 
 /// Represents a response
 pub struct Response<T> {
@@ -51,6 +51,10 @@ impl<T> Response<T> {
     /// Get a reference to the custom response metadata.
     pub fn get_metadata(&self) -> &HashMap<String, String> {
         &self.metadata
+    }
+
+    pub fn metadata_mut(&mut self) -> &mut HashMap<String, String> {
+        &mut self.metadata
     }
 }
 
@@ -76,7 +80,7 @@ where
     /// This is only used internally and should not concern external users.
     pub fn into_stream(mut self) -> Response<Stream<Vec<u8>>> {
         let (tx, rx) = unbounded_channel::<Vec<u8>>();
-        tokio::spawn(async move {
+        spawn(async move {
             while let Some(item) = self.payload.next().await {
                 if tx.send(item.encode_to_vec()).is_err() {
                     break;

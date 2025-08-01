@@ -153,6 +153,12 @@ mod proto {
     include_proto!("protorpc.core");
 }
 
+impl proto::Frame {
+    pub fn order_number(&self) -> u128 {
+        ((self.id_high as u128) << 64) | (self.id_low as u128)
+    }
+}
+
 /// Errors that occur during requests
 #[derive(Debug, Error)]
 pub enum Error {
@@ -262,4 +268,20 @@ pub trait RpcServiceBuilder {
 
     #[cfg(not(doc))]
     fn build(ctx: Self::Context, transport: transport::IOStream) -> Self::Output;
+}
+
+pub(crate) mod task {
+    #[cfg(not(target_family = "wasm"))]
+    pub use tokio::spawn;
+
+    #[cfg(target_family = "wasm")]
+    pub fn spawn<T>(future: T)
+    where
+        T: Future + 'static,
+        T::Output: 'static,
+    {
+        wasm_bindgen_futures::spawn_local(async move {
+            future.await;
+        });
+    }
 }

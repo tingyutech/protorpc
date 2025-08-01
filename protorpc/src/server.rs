@@ -5,11 +5,13 @@ use prost::Message;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
-use crate::{Stream, proto, request::Request, response::Response, transport::IOStream};
+use crate::{
+    Stream, proto, request::Request, response::Response, task::spawn, transport::IOStream,
+};
 
 #[derive(Debug)]
 pub struct BaseRequest<T> {
-    pub order_id: String,
+    pub order_id: u128,
     pub service: String,
     pub method: String,
     pub metadata: HashMap<String, String>,
@@ -28,7 +30,7 @@ impl BaseRequest<Stream<Vec<u8>>> {
     pub fn into_stream<T: Message + Unpin + Default + 'static>(mut self) -> Request<Stream<T>> {
         let (tx, rx) = unbounded_channel::<T>();
 
-        tokio::spawn(async move {
+        spawn(async move {
             while let Some(buf) = self.payload.next().await {
                 if let Ok(message) = T::decode(buf.as_ref()) {
                     if tx.send(message).is_err() {
@@ -50,31 +52,33 @@ impl BaseRequest<Stream<Vec<u8>>> {
 
 #[derive(Default)]
 struct RequestFrameAdapter {
-    stream_senders: HashMap<String, UnboundedSender<Vec<u8>>>,
+    stream_senders: HashMap<u128, UnboundedSender<Vec<u8>>>,
 }
 
 impl RequestFrameAdapter {
     fn accept(&mut self, frame: proto::Frame) -> Option<BaseRequest<Stream<Vec<u8>>>> {
+        let order_id = frame.order_number();
+
         if (frame.flags & proto::FrameFlags::EndOfStream as u32) != 0 {
-            let _ = self.stream_senders.remove(&frame.order_id);
+            let _ = self.stream_senders.remove(&order_id);
         }
 
         if let Some(payload) = frame.payload {
             match payload {
                 proto::frame::Payload::RequestHeader(header) => {
                     let (tx, rx) = unbounded_channel::<Vec<u8>>();
-                    self.stream_senders.insert(frame.order_id.clone(), tx);
+                    self.stream_senders.insert(order_id, tx);
 
                     return Some(BaseRequest {
                         payload: Stream::from(UnboundedReceiverStream::from(rx)),
-                        order_id: frame.order_id,
                         service: frame.service,
                         method: frame.method,
                         metadata: header.metadata,
+                        order_id,
                     });
                 }
                 proto::frame::Payload::Request(request) => {
-                    if let Some(tx) = self.stream_senders.get(&frame.order_id).as_ref() {
+                    if let Some(tx) = self.stream_senders.get(&order_id).as_ref() {
                         let _ = tx.send(request.payload);
                     }
                 }
@@ -86,7 +90,8 @@ impl RequestFrameAdapter {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 pub trait ServerService {
     const NAME: &'static str;
 
@@ -110,7 +115,7 @@ pub fn startup_server<T>(
 {
     let service = Arc::new(service);
     let (frame_sender, mut frame_receiver) = unbounded_channel::<proto::Frame>();
-    tokio::spawn(async move {
+    spawn(async move {
         while let Some(frame) = frame_receiver.recv().await {
             if writable_stream.send(frame).is_err() {
                 break;
@@ -118,7 +123,7 @@ pub fn startup_server<T>(
         }
     });
 
-    tokio::spawn(async move {
+    spawn(async move {
         let mut adapter = RequestFrameAdapter::default();
 
         while let Some(frame) = readable_stream.recv().await {
@@ -126,9 +131,10 @@ pub fn startup_server<T>(
                 let service = service.clone();
                 let frame_sender_ = frame_sender.clone();
 
-                tokio::spawn(async move {
+                spawn(async move {
                     let mut frame = proto::Frame {
-                        order_id: request.order_id.clone(),
+                        id_high: (request.order_id >> 64) as u64,
+                        id_low: (request.order_id & 0xFFFFFFFFFFFFFFFF) as u64,
                         service: T::NAME.to_string(),
                         method: request.method.clone(),
                         flags: 0,

@@ -30,3 +30,8 @@ jobs:
               uses: arduino/setup-protoc@v3
             - name: Run tests
               run: cargo test
+            - name: Run check for wasm32
+              run: |
+                  rustup target add wasm32-unknown-unknown
+                  cd protorpc
+                  cargo check --target wasm32-unknown-unknown

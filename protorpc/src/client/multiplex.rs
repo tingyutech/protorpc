@@ -1,24 +1,29 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use nanoid::nanoid;
 use prost::Message;
-use tokio::sync::{
-    RwLock,
-    mpsc::{UnboundedSender, unbounded_channel},
+use tokio::{
+    sync::{
+        RwLock,
+        mpsc::{UnboundedSender, unbounded_channel},
+    },
+    time::Duration,
 };
+
+use uuid::Uuid;
 
 use crate::{
     Stream,
     client::{BaseRequest, Error, RequestHandler},
     proto,
+    task::spawn,
     transport::IOStream,
 };
 
 /// Multiplexing implementation
 pub struct Multiplex {
     output_frame_sender: UnboundedSender<proto::Frame>,
-    frame_handlers: Arc<RwLock<HashMap<String, UnboundedSender<proto::Frame>>>>,
+    frame_handlers: Arc<RwLock<HashMap<u128, UnboundedSender<proto::Frame>>>>,
 }
 
 impl Multiplex {
@@ -28,13 +33,13 @@ impl Multiplex {
             sender: writable_stream,
         }: IOStream,
     ) -> Self {
-        let frame_handlers: Arc<RwLock<HashMap<String, UnboundedSender<proto::Frame>>>> =
+        let frame_handlers: Arc<RwLock<HashMap<u128, UnboundedSender<proto::Frame>>>> =
             Default::default();
 
         {
             let frame_handlers_ = frame_handlers.clone();
 
-            tokio::spawn(async move {
+            spawn(async move {
                 while let Some(frame) = readable_stream.recv().await {
                     #[cfg(feature = "log")]
                     log::debug!(
@@ -42,7 +47,7 @@ impl Multiplex {
                         frame
                     );
 
-                    if let Some(handler) = frame_handlers_.read().await.get(&frame.order_id) {
+                    if let Some(handler) = frame_handlers_.read().await.get(&frame.order_number()) {
                         if !handler.is_closed() {
                             let _ = handler.send(frame);
                         }
@@ -55,7 +60,7 @@ impl Multiplex {
         {
             let frame_handlers_ = Arc::downgrade(&frame_handlers);
 
-            tokio::spawn(async move {
+            spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -70,7 +75,7 @@ impl Multiplex {
 
         let (tx, mut rx) = unbounded_channel::<proto::Frame>();
         {
-            tokio::spawn(async move {
+            spawn(async move {
                 while let Some(frame) = rx.recv().await {
                     #[allow(unused_variables)]
                     if let Err(e) = writable_stream.send(frame) {
@@ -90,7 +95,8 @@ impl Multiplex {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 impl RequestHandler for Multiplex {
     async fn request<T, Q, S>(
         &self,
@@ -104,11 +110,11 @@ impl RequestHandler for Multiplex {
         // All frames sent by the remote response are delivered through this channel.
         let (response_frame_sender, response_frame_receiver) = unbounded_channel::<proto::Frame>();
 
-        let id = nanoid!();
+        let id = Uuid::new_v4().as_u128();
         self.frame_handlers
             .write()
             .await
-            .insert(id.clone(), response_frame_sender);
+            .insert(id, response_frame_sender);
 
         req.request(
             self.output_frame_sender.clone(),

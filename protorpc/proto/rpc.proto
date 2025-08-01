@@ -27,14 +27,15 @@ message Response {
 }
 
 message Frame {
-    string order_id = 1;
-    string service = 2;
-    string method = 3;
-    uint32 flags = 4;
+    uint64 id_high = 1;
+    uint64 id_low = 2;
+    string service = 3;
+    string method = 4;
+    uint32 flags = 5;
     oneof payload {
-        RequestHeader request_header = 5;
-        Request request = 6;
-        ResponseHeader response_header = 7;
-        Response response = 8;
+        RequestHeader request_header = 6;
+        Request request = 7;
+        ResponseHeader response_header = 8;
+        Response response = 9;
     }
 }
