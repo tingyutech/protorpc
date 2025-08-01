@@ -102,7 +102,8 @@ where
 /// The external implementation can decide how to create the stream based on the
 /// stream's ID. When returning, any type that implements `AsyncRead` and
 /// `AsyncWrite` can be converted into an `IOStream`, such as `TcpStream`.
-#[async_trait]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 pub trait Transport: Send + Sync {
     type Error: Debug;
 
