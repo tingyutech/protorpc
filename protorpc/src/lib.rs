@@ -269,3 +269,19 @@ pub trait RpcServiceBuilder {
     #[cfg(not(doc))]
     fn build(ctx: Self::Context, transport: transport::IOStream) -> Self::Output;
 }
+
+pub(crate) mod task {
+    #[cfg(not(target_family = "wasm"))]
+    pub use tokio::spawn;
+
+    #[cfg(target_family = "wasm")]
+    pub fn spawn<T>(future: T)
+    where
+        T: Future + 'static,
+        T::Output: 'static,
+    {
+        wasm_bindgen_futures::spawn_local(async move {
+            future.await;
+        });
+    }
+}
