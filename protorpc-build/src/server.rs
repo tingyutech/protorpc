@@ -77,7 +77,8 @@ pub fn make_server(service: &Service) -> TokenStream {
     let service_attr = service.proto_name.clone();
 
     quote! {
-        #[protorpc::async_trait]
+        #[cfg_attr(target_family = "wasm", protorpc::async_trait(?Send))]
+        #[cfg_attr(not(target_family = "wasm"), protorpc::async_trait)]
         pub trait #service_handler_name: std::marker::Send + std::marker::Sync + 'static {
             type Error: std::fmt::Debug;
 
@@ -86,7 +87,8 @@ pub fn make_server(service: &Service) -> TokenStream {
 
         pub struct #service_name<T: #service_handler_name>(pub T);
 
-        #[protorpc::async_trait]
+        #[cfg_attr(target_family = "wasm", protorpc::async_trait(?Send))]
+        #[cfg_attr(not(target_family = "wasm"), protorpc::async_trait)]
         impl<T: #service_handler_name> protorpc::server::ServerService for #service_name<T> {
             const NAME: &'static str = #service_attr;
 

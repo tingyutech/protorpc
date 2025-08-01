@@ -10,7 +10,7 @@ use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
 
-use crate::proto;
+use crate::{proto, task::spawn};
 
 /// A wrapper for the input/output stream
 pub struct IOStream {
@@ -26,7 +26,7 @@ where
         let (sender, mut output_receiver) = unbounded_channel::<proto::Frame>();
         let (input_sender, receiver) = unbounded_channel::<proto::Frame>();
 
-        tokio::spawn(async move {
+        spawn(async move {
             let mut read_buffer = BytesMut::new();
             let mut send_buffer = BytesMut::new();
 

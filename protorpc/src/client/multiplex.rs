@@ -1,17 +1,22 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use prost::Message;
-use tokio::sync::{
-    RwLock,
-    mpsc::{UnboundedSender, unbounded_channel},
+use tokio::{
+    sync::{
+        RwLock,
+        mpsc::{UnboundedSender, unbounded_channel},
+    },
+    time::Duration,
 };
+
 use uuid::Uuid;
 
 use crate::{
     Stream,
     client::{BaseRequest, Error, RequestHandler},
     proto,
+    task::spawn,
     transport::IOStream,
 };
 
@@ -34,7 +39,7 @@ impl Multiplex {
         {
             let frame_handlers_ = frame_handlers.clone();
 
-            tokio::spawn(async move {
+            spawn(async move {
                 while let Some(frame) = readable_stream.recv().await {
                     #[cfg(feature = "log")]
                     log::debug!(
@@ -55,7 +60,7 @@ impl Multiplex {
         {
             let frame_handlers_ = Arc::downgrade(&frame_handlers);
 
-            tokio::spawn(async move {
+            spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -70,7 +75,7 @@ impl Multiplex {
 
         let (tx, mut rx) = unbounded_channel::<proto::Frame>();
         {
-            tokio::spawn(async move {
+            spawn(async move {
                 while let Some(frame) = rx.recv().await {
                     #[allow(unused_variables)]
                     if let Err(e) = writable_stream.send(frame) {

@@ -21,7 +21,9 @@
 //! ]));
 //! ```
 
-use std::{collections::HashMap, ops::Deref, time::Duration};
+use std::{collections::HashMap, ops::Deref};
+
+use tokio::time::Duration;
 
 /// Default timeout is 5 seconds
 ///
