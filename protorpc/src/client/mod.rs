@@ -15,7 +15,8 @@ use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 use crate::{Error, Stream, proto};
 
 /// Request handler trait
-#[async_trait]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 pub trait RequestHandler {
     /// Handle request
     ///
