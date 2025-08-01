@@ -9,7 +9,7 @@ use crate::{Stream, proto, request::Request, response::Response, transport::IOSt
 
 #[derive(Debug)]
 pub struct BaseRequest<T> {
-    pub order_id: String,
+    pub order_id: u128,
     pub service: String,
     pub method: String,
     pub metadata: HashMap<String, String>,
@@ -50,31 +50,33 @@ impl BaseRequest<Stream<Vec<u8>>> {
 
 #[derive(Default)]
 struct RequestFrameAdapter {
-    stream_senders: HashMap<String, UnboundedSender<Vec<u8>>>,
+    stream_senders: HashMap<u128, UnboundedSender<Vec<u8>>>,
 }
 
 impl RequestFrameAdapter {
     fn accept(&mut self, frame: proto::Frame) -> Option<BaseRequest<Stream<Vec<u8>>>> {
+        let order_id = frame.order_number();
+
         if (frame.flags & proto::FrameFlags::EndOfStream as u32) != 0 {
-            let _ = self.stream_senders.remove(&frame.order_id);
+            let _ = self.stream_senders.remove(&order_id);
         }
 
         if let Some(payload) = frame.payload {
             match payload {
                 proto::frame::Payload::RequestHeader(header) => {
                     let (tx, rx) = unbounded_channel::<Vec<u8>>();
-                    self.stream_senders.insert(frame.order_id.clone(), tx);
+                    self.stream_senders.insert(order_id, tx);
 
                     return Some(BaseRequest {
                         payload: Stream::from(UnboundedReceiverStream::from(rx)),
-                        order_id: frame.order_id,
                         service: frame.service,
                         method: frame.method,
                         metadata: header.metadata,
+                        order_id,
                     });
                 }
                 proto::frame::Payload::Request(request) => {
-                    if let Some(tx) = self.stream_senders.get(&frame.order_id).as_ref() {
+                    if let Some(tx) = self.stream_senders.get(&order_id).as_ref() {
                         let _ = tx.send(request.payload);
                     }
                 }
@@ -128,7 +130,8 @@ pub fn startup_server<T>(
 
                 tokio::spawn(async move {
                     let mut frame = proto::Frame {
-                        order_id: request.order_id.clone(),
+                        id_high: (request.order_id >> 64) as u64,
+                        id_low: (request.order_id & 0xFFFFFFFFFFFFFFFF) as u64,
                         service: T::NAME.to_string(),
                         method: request.method.clone(),
                         flags: 0,

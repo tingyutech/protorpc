@@ -1,12 +1,12 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use nanoid::nanoid;
 use prost::Message;
 use tokio::sync::{
     RwLock,
     mpsc::{UnboundedSender, unbounded_channel},
 };
+use uuid::Uuid;
 
 use crate::{
     Stream,
@@ -18,7 +18,7 @@ use crate::{
 /// Multiplexing implementation
 pub struct Multiplex {
     output_frame_sender: UnboundedSender<proto::Frame>,
-    frame_handlers: Arc<RwLock<HashMap<String, UnboundedSender<proto::Frame>>>>,
+    frame_handlers: Arc<RwLock<HashMap<u128, UnboundedSender<proto::Frame>>>>,
 }
 
 impl Multiplex {
@@ -28,7 +28,7 @@ impl Multiplex {
             sender: writable_stream,
         }: IOStream,
     ) -> Self {
-        let frame_handlers: Arc<RwLock<HashMap<String, UnboundedSender<proto::Frame>>>> =
+        let frame_handlers: Arc<RwLock<HashMap<u128, UnboundedSender<proto::Frame>>>> =
             Default::default();
 
         {
@@ -42,7 +42,7 @@ impl Multiplex {
                         frame
                     );
 
-                    if let Some(handler) = frame_handlers_.read().await.get(&frame.order_id) {
+                    if let Some(handler) = frame_handlers_.read().await.get(&frame.order_number()) {
                         if !handler.is_closed() {
                             let _ = handler.send(frame);
                         }
@@ -104,11 +104,11 @@ impl RequestHandler for Multiplex {
         // All frames sent by the remote response are delivered through this channel.
         let (response_frame_sender, response_frame_receiver) = unbounded_channel::<proto::Frame>();
 
-        let id = nanoid!();
+        let id = Uuid::new_v4().as_u128();
         self.frame_handlers
             .write()
             .await
-            .insert(id.clone(), response_frame_sender);
+            .insert(id, response_frame_sender);
 
         req.request(
             self.output_frame_sender.clone(),

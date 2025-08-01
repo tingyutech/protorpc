@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use nanoid::nanoid;
 use prost::Message;
+use uuid::Uuid;
 
 use crate::{
     Stream,
@@ -35,10 +35,10 @@ where
     {
         // Let the external transport layer create an independent stream for the
         // current request.
-        let id = nanoid!();
+        let id = Uuid::new_v4().as_u128();
         let IOStream { receiver, sender } = self
             .0
-            .create_stream(&id)
+            .create_stream(id)
             .await
             .map_err(|e| Error::Transport(format!("{:?}", e)))?
             .into();
