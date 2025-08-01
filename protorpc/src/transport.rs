@@ -106,5 +106,5 @@ where
 pub trait Transport: Send + Sync {
     type Error: Debug;
 
-    async fn create_stream(&self, id: &str) -> Result<IOStream, Self::Error>;
+    async fn create_stream(&self, id: u128) -> Result<IOStream, Self::Error>;
 }

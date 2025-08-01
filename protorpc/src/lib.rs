@@ -153,6 +153,12 @@ mod proto {
     include_proto!("protorpc.core");
 }
 
+impl proto::Frame {
+    pub fn order_number(&self) -> u128 {
+        ((self.id_high as u128) << 64) | (self.id_low as u128)
+    }
+}
+
 /// Errors that occur during requests
 #[derive(Debug, Error)]
 pub enum Error {
