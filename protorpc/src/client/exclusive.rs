@@ -44,13 +44,6 @@ where
             .map_err(|e| Error::Transport(format!("{:?}", e)))?
             .into();
 
-        let result = req.request(sender, receiver, id).await;
-
-        #[cfg(feature = "log")]
-        if let Err(e) = &result {
-            log::error!("request error: {:?}, req: {:?}", e, req);
-        }
-
-        result
+        req.request(sender, receiver, id).await
     }
 }

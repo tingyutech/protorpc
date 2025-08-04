@@ -116,18 +116,11 @@ impl RequestHandler for Multiplex {
             .await
             .insert(id, response_frame_sender);
 
-        let result = req.request(
+        req.request(
             self.output_frame_sender.clone(),
             response_frame_receiver,
             id,
         )
-        .await;
-
-        #[cfg(feature = "log")]
-        if let Err(e) = &result {
-            log::error!("request error: {:?}, req: {:?}", e, req);
-        }
-
-        result
+        .await
     }
 }
