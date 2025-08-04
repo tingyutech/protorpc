@@ -80,7 +80,7 @@ where
                         #[allow(unused_variables)]
                         if let Err(e) = transport.write_all(&send_buffer).await {
                             #[cfg(feature = "log")]
-                            log::error!("transport write error: {:?}"m, e);
+                            log::error!("transport write error: {:?}", e);
 
                             break;
                         } else {
