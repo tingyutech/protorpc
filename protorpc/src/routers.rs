@@ -133,8 +133,18 @@ impl Routes {
                                         let index = {
                                             let transport_senders = transport_senders_.read().await;
                                             let mut keys = transport_senders.keys();
-                                            let index = fastrand::usize(0..keys.len());
-                                            keys.nth(index).copied().unwrap_or(0)
+
+                                            let offset = if keys.len() == 0 {
+                                                continue;
+                                            } else {
+                                                if keys.len() == 1 {
+                                                    0
+                                                } else {
+                                                    fastrand::usize(0..keys.len())
+                                                }
+                                            };
+
+                                            keys.nth(offset).copied().unwrap_or(0)
                                         };
 
                                         lru.push(id, index);
