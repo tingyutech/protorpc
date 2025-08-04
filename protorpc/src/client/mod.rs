@@ -51,6 +51,17 @@ pub struct BaseRequest<'a, T> {
     pub request: T,
 }
 
+impl<'a, T> std::fmt::Debug for BaseRequest<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BaseRequest")
+            .field("service", &self.service)
+            .field("method", &self.method)
+            .field("timeout", &self.timeout)
+            .field("metadata", &self.metadata)
+            .finish()
+    }
+}
+
 impl<'a, T> BaseRequest<'a, T> {
     async fn request<Q, S>(
         mut self,
