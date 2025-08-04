@@ -76,7 +76,7 @@ impl<'a, T> BaseRequest<'a, T> {
     {
         #[cfg(feature = "log")]
         log::debug!(
-            "client core received a request, service = {}, method = {}",
+            "client core send a request, service = {}, method = {}",
             self.service,
             self.method
         );
