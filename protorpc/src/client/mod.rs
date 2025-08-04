@@ -126,13 +126,72 @@ impl<'a, T> BaseRequest<'a, T> {
         }
 
         {
+            let mut response_header_sender = Some(response_header_sender);
+
+            spawn(async move {
+                while let Some(frame) = readable_stream.recv().await {
+                    #[cfg(feature = "log")]
+                    log::debug!("client core received a response frame, frame = {:?}", frame);
+
+                    // The stream has ended, terminate the process. If the first packet is the end
+                    // of the stream, the stream is invalid.
+                    if (frame.flags & proto::FrameFlags::EndOfStream as u32) != 0 {
+                        if let Some(tx) = response_header_sender.take() {
+                            let _ = tx.send(Err(Error::InvalidStream));
+                        }
+
+                        break;
+                    }
+
+                    if let Some(payload) = frame.payload {
+                        match payload {
+                            proto::frame::Payload::Response(response) => {
+                                // Received a response before receiving the response header, this is
+                                // an invalid stream.
+                                if let Some(tx) = response_header_sender.take() {
+                                    let _ = tx.send(Err(Error::InvalidStream));
+
+                                    break;
+                                }
+
+                                // Any error here will cause the current stream to be terminated
+                                // directly.
+                                if let Ok(payload) = S::decode(response.payload.as_ref()) {
+                                    if response_stream_sender.send(payload).is_err() {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                            proto::frame::Payload::ResponseHeader(header) => {
+                                let _ = response_header_sender.take().map(|it| {
+                                    it.send(if header.success {
+                                        Ok(header.metadata)
+                                    } else {
+                                        Err(Error::ErrorResponse(
+                                            header
+                                                .error
+                                                .unwrap_or_else(|| "Unknown error".to_string()),
+                                        ))
+                                    })
+                                });
+                            }
+                            _ => (),
+                        }
+                    }
+                }
+            });
+        }
+
+        {
             let output_frame_sender = writable_stream.clone();
 
             spawn(async move {
                 while let Some(payload) = self.request.next().await {
                     #[cfg(feature = "log")]
                     log::debug!(
-                        "client core received a response payload, service = {}, order id = {}",
+                        "client core send a request payload, service = {}, order id = {}",
                         frame.service,
                         order_id
                     );
@@ -165,68 +224,13 @@ impl<'a, T> BaseRequest<'a, T> {
 
                     #[cfg(feature = "log")]
                     log::debug!(
-                        "client core sent a response end of stream frame, service = {}, order id = {}",
+                        "client core sent a request end of stream frame, service = {}, order id = {}",
                         frame.service,
                         order_id
                     );
                 }
             });
         }
-
-        let mut response_header_sender = Some(response_header_sender);
-
-        spawn(async move {
-            while let Some(frame) = readable_stream.recv().await {
-                #[cfg(feature = "log")]
-                log::debug!("client core received a response frame, frame = {:?}", frame);
-
-                // The stream has ended, terminate the process. If the first packet is the end
-                // of the stream, the stream is invalid.
-                if (frame.flags & proto::FrameFlags::EndOfStream as u32) != 0 {
-                    if let Some(tx) = response_header_sender.take() {
-                        let _ = tx.send(Err(Error::InvalidStream));
-                    }
-
-                    break;
-                }
-
-                if let Some(payload) = frame.payload {
-                    match payload {
-                        proto::frame::Payload::Response(response) => {
-                            // Received a response before receiving the response header, this is an
-                            // invalid stream.
-                            if let Some(tx) = response_header_sender.take() {
-                                let _ = tx.send(Err(Error::InvalidStream));
-
-                                break;
-                            }
-
-                            // Any error here will cause the current stream to be terminated
-                            // directly.
-                            if let Ok(payload) = S::decode(response.payload.as_ref()) {
-                                if response_stream_sender.send(payload).is_err() {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                        proto::frame::Payload::ResponseHeader(header) => {
-                            let _ = response_header_sender.take().map(|it| {
-                                it.send(if header.success {
-                                    Ok(header.metadata)
-                                } else {
-                                    Err(Error::ErrorResponse(
-                                        header.error.unwrap_or_else(|| "Unknown error".to_string()),
-                                    ))
-                                })
-                            });
-                        }
-                        _ => (),
-                    }
-                }
-            }
-        });
 
         // try it the result
         let metadata = timeout(self.timeout, response_header_receiver)
