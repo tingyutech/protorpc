@@ -66,8 +66,8 @@ impl<'a, T> BaseRequest<'a, T> {
         #[cfg(feature = "log")]
         log::debug!(
             "client core received a request, service = {}, method = {}",
-            service,
-            method
+            self.service,
+            self.method
         );
 
         // The overall process actually simulates HTTP, but with some differences.
@@ -91,9 +91,9 @@ impl<'a, T> BaseRequest<'a, T> {
         #[cfg(feature = "log")]
         log::debug!(
             "client core registered a response frame handler, service = {}, method = {}, order id = {}",
-            service,
-            method,
-            frame.order_id
+            self.service,
+            self.method,
+            order_id
         );
 
         // First send the request header, similar to an HTTP request header.
@@ -109,8 +109,8 @@ impl<'a, T> BaseRequest<'a, T> {
             #[cfg(feature = "log")]
             log::debug!(
                 "client core sent a request header, service = {}, method = {}",
-                service,
-                method
+                self.service,
+                self.method
             );
         }
 
@@ -123,7 +123,7 @@ impl<'a, T> BaseRequest<'a, T> {
                     log::debug!(
                         "client core received a response payload, service = {}, order id = {}",
                         frame.service,
-                        frame.order_id
+                        order_id
                     );
 
                     frame.payload = Some(proto::frame::Payload::Request(proto::Request {
@@ -136,7 +136,7 @@ impl<'a, T> BaseRequest<'a, T> {
                         log::warn!(
                             "client core failed to send a response frame, service = {}, order id = {}, error = {}",
                             frame.service,
-                            frame.order_id,
+                            order_id,
                             e
                         );
 
@@ -156,7 +156,7 @@ impl<'a, T> BaseRequest<'a, T> {
                     log::debug!(
                         "client core sent a response end of stream frame, service = {}, order id = {}",
                         frame.service,
-                        frame.order_id
+                        order_id
                     );
                 }
             });
