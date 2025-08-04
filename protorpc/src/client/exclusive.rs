@@ -41,8 +41,7 @@ where
             .0
             .create_stream(id)
             .await
-            .map_err(|e| Error::Transport(format!("{:?}", e)))?
-            .into();
+            .map_err(|e| Error::Transport(format!("{:?}", e)))?;
 
         req.request(sender, receiver, id).await
     }

@@ -9,13 +9,22 @@ use crate::{
     Stream, proto, request::Request, response::Response, task::spawn, transport::IOStream,
 };
 
-#[derive(Debug)]
 pub struct BaseRequest<T> {
     pub order_id: u128,
     pub service: String,
     pub method: String,
     pub metadata: HashMap<String, String>,
     pub payload: T,
+}
+
+impl<T> std::fmt::Debug for BaseRequest<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BaseRequest")
+            .field("service", &self.service)
+            .field("method", &self.method)
+            .field("metadata", &self.metadata)
+            .finish()
+    }
 }
 
 impl BaseRequest<Stream<Vec<u8>>> {

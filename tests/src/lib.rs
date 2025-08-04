@@ -3,8 +3,9 @@ use protorpc::{
     request::Request,
     response::Response,
     tokio_stream::{self, StreamExt, wrappers::UnboundedReceiverStream},
+    transport::{IOStream, Transport},
 };
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::{net::TcpStream, sync::mpsc::unbounded_channel};
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/grpc.examples.echo.rs"));
@@ -114,12 +115,25 @@ impl proto::server::EchoServerHandler for EchoService {
     }
 }
 
+pub struct Socket(u16);
+
+#[protorpc::async_trait]
+impl Transport for Socket {
+    type Error = anyhow::Error;
+
+    async fn create_stream(&self, _id: u128) -> Result<IOStream, Self::Error> {
+        Ok(TcpStream::connect(format!("127.0.0.1:{}", self.0))
+            .await?
+            .into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use protorpc::routers::Routes;
-    use tokio::net::{TcpListener, TcpStream};
+    use tokio::net::TcpListener;
 
     use super::*;
 
@@ -140,11 +154,7 @@ mod tests {
             }
         });
 
-        let client = proto::client::EchoClient::with_stream(
-            TcpStream::connect(format!("127.0.0.1:{}", port))
-                .await?
-                .into(),
-        );
+        let client = proto::client::EchoClient::with_transport(Socket(port));
 
         {
             let metadata = HashMap::from([("type".to_string(), "unary_echo".to_string())]);

@@ -77,7 +77,11 @@ where
                             send_buffer[..4].copy_from_slice(size.to_be_bytes().as_ref());
                         }
 
-                        if transport.write_all(&send_buffer).await.is_err() {
+                        #[allow(unused_variables)]
+                        if let Err(e) = transport.write_all(&send_buffer).await {
+                            #[cfg(feature = "log")]
+                            log::error!("transport write error: {:?}"m, e);
+
                             break;
                         } else {
                             let _ = transport.flush().await;
