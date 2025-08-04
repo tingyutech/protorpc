@@ -130,6 +130,10 @@ impl<'a, T> BaseRequest<'a, T> {
 
             spawn(async move {
                 while let Some(frame) = readable_stream.recv().await {
+                    if frame.order_number() != order_id {
+                        continue;
+                    }
+
                     #[cfg(feature = "log")]
                     log::debug!("client core received a response frame, frame = {:?}", frame);
 
