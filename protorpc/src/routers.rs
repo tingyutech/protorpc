@@ -11,16 +11,7 @@
 //! routes.add_stream(stream).await;
 //! routes.make_service::<proto::server::EchoServer<EchoService>>(EchoService).await;
 //! ```
-//!
-//! For the server, routes is required, and the rpc server implementation must
-//! be managed through routes. But that's not all, the client can also be
-//! managed through routes, in which case the client uses the streams in the
-//! transport stream pool.
-//!
-//! ```rust,ignore
-//! let client = routes.make_service::<proto::client::EchoClient>(()).await;
-//! ```
-//!
+//! 
 //! ### Transport Layer
 //!
 //! routes can unconditionally accept any stream. You don't need to worry about
@@ -116,51 +107,10 @@ impl Routes {
                             #[cfg(feature = "log")]
                             log::debug!("routers bus forwarding task received a frame, frame = {:?}", frame);
 
-                            let sequence = {
-                                let mut lru = lru_.lock().await;
-
-                                if let Some(sequence) = lru.get(&id).copied() {
-                                    sequence
-                                } else {
-                                    if let Some(proto::frame::Payload::RequestHeader(_)) = frame.payload
-                                    {
-                                        // If this frame is a request header and
-                                        // there is no record in the lru, randomly
-                                        // select a transport layer
-                                        //
-                                        // Because this means the request header
-                                        // was sent by the client and is not recorded.
-                                        let index = {
-                                            let transport_senders = transport_senders_.read().await;
-                                            let mut keys = transport_senders.keys();
-
-                                            let offset = if keys.len() == 0 {
-                                                continue;
-                                            } else {
-                                                if keys.len() == 1 {
-                                                    0
-                                                } else {
-                                                    fastrand::usize(0..keys.len())
-                                                }
-                                            };
-
-                                            keys.nth(offset).copied().unwrap_or(0)
-                                        };
-
-                                        lru.push(id, index);
-
-                                        #[cfg(feature = "log")]
-                                        log::debug!(
-                                            "request has no bound transport layer, randomly assigned to = {}, service = {:?}",
-                                            index,
-                                            frame.service,
-                                        );
-
-                                        index
-                                    } else {
-                                        continue;
-                                    }
-                                }
+                            let sequence = if let Some(sequence) = lru_.lock().await.get(&id).copied() {
+                                sequence
+                            } else {
+                                continue;
                             };
 
                             let mut is_closed = false;
