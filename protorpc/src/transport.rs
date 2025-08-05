@@ -38,21 +38,21 @@ where
                         }
 
                         loop {
-                            // There are at least 4 bytes, because there must be a
+                            // There are at least 8 bytes, because there must be a
                             // length field
-                            if read_buffer.len() < 4 {
+                            if read_buffer.len() < 8 {
                                 break;
                             }
 
                             let content_len =
-                                u32::from_be_bytes(read_buffer[..4].try_into().unwrap()) as usize;
+                                u64::from_be_bytes(read_buffer[..8].try_into().unwrap()) as usize;
 
-                            if content_len + 4 > read_buffer.len() {
+                            if content_len + 8 > read_buffer.len() {
                                 break;
                             }
 
                             // skip len
-                            read_buffer.advance(4);
+                            read_buffer.advance(8);
 
                             match proto::Frame::decode(&mut read_buffer.split_to(content_len)) {
                                 Ok(frame) => {
@@ -68,13 +68,13 @@ where
                     }
                     Some(frame) = output_receiver.recv() => {
                         send_buffer.clear();
-                        send_buffer.put_u32(0);
+                        send_buffer.put_u64(0);
 
                         frame.encode(&mut send_buffer).unwrap();
 
                         {
-                            let size = send_buffer.len() as u32 - 4;
-                            send_buffer[..4].copy_from_slice(size.to_be_bytes().as_ref());
+                            let size = send_buffer.len() as u32 - 8;
+                            send_buffer[..8].copy_from_slice(size.to_be_bytes().as_ref());
                         }
 
                         #[allow(unused_variables)]
