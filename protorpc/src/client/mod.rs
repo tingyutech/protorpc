@@ -151,9 +151,6 @@ impl<'a, T> BaseRequest<'a, T> {
                     if let Some(payload) = frame.payload {
                         match payload {
                             proto::frame::Payload::Response(response) => {
-                                #[cfg(feature = "log")]
-                                log::info!("client recv a response frame, serial number = {}", response.serial_number);
-
                                 // Received a response before receiving the response header, this is
                                 // an invalid stream.
                                 if let Some(tx) = response_header_sender.take() {
