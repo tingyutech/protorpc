@@ -155,8 +155,8 @@ mod proto {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OrderNumber {
-    pub id: u64,
-    pub number: u64,
+    id: u64,
+    number: u64,
 }
 
 impl Default for OrderNumber {
@@ -169,7 +169,7 @@ impl From<u128> for OrderNumber {
     fn from(value: u128) -> Self {
         Self {
             id: (value >> 64) as u64,
-            number: value as u64,
+            number: (value & 0xFFFFFFFFFFFFFFFF) as u64,
         }
     }
 }

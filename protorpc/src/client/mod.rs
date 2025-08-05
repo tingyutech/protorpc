@@ -102,10 +102,10 @@ impl<'a, T> BaseRequest<'a, T> {
 
         #[cfg(feature = "log")]
         log::debug!(
-            "client core registered a response frame handler, service = {}, method = {}, order id = {}",
+            "client core registered a response frame handler, service = {}, method = {}, order id = {:?}",
             self.service,
             self.method,
-            order_id
+            order_number
         );
 
         // First send the request header, similar to an HTTP request header.
@@ -198,9 +198,9 @@ impl<'a, T> BaseRequest<'a, T> {
                 while let Some(payload) = self.request.next().await {
                     #[cfg(feature = "log")]
                     log::debug!(
-                        "client core send a request payload, service = {}, order id = {}",
+                        "client core send a request payload, service = {}, order id = {:?}",
                         frame.service,
-                        order_id
+                        order_number
                     );
 
                     frame.payload = Some(proto::frame::Payload::Request(proto::Request {
@@ -214,9 +214,9 @@ impl<'a, T> BaseRequest<'a, T> {
                     if let Err(e) = output_frame_sender.send(frame.clone()) {
                         #[cfg(feature = "log")]
                         log::warn!(
-                            "client core failed to send a response frame, service = {}, order id = {}, error = {}",
+                            "client core failed to send a response frame, service = {}, order id = {:?}, error = {:?}",
                             frame.service,
-                            order_id,
+                            order_number,
                             e
                         );
 
@@ -234,9 +234,9 @@ impl<'a, T> BaseRequest<'a, T> {
 
                     #[cfg(feature = "log")]
                     log::debug!(
-                        "client core sent a request end of stream frame, service = {}, order id = {}",
+                        "client core sent a request end of stream frame, service = {}, order id = {:?}",
                         frame.service,
-                        order_id
+                        order_number
                     );
                 }
             });

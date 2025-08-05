@@ -150,7 +150,7 @@ pub fn startup_server<T>(
                         ..Default::default()
                     };
 
-                    frame.set_order_number(OrderNumber::default());
+                    frame.set_order_number(request.order_number);
 
                     match service.handle(request).await {
                         Ok(mut response) => {
