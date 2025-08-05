@@ -83,8 +83,6 @@ where
                             log::error!("transport write error: {:?}", e);
 
                             break;
-                        } else {
-                            let _ = transport.flush().await;
                         }
                     }
                     else => {

@@ -107,16 +107,5 @@ pub fn make_client(service: &Service) -> TokenStream {
                 Self(protorpc::client::exclusive::Exclusive::new(transport))
             }
         }
-
-        impl protorpc::RpcServiceBuilder for #service_name<protorpc::client::multiplex::Multiplex> {
-            const NAME: &'static str = #service_attr;
-
-            type Context = ();
-            type Output = Self;
-
-            fn build(_: Self::Context, transport: protorpc::transport::IOStream) -> Self {
-                Self::with_stream(transport)
-            }
-        }
     }
 }
