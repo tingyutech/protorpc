@@ -51,10 +51,10 @@ where
                                 break;
                             }
 
-                            // If the CRC check fails, it means this stream is already 
+                            // If the CRC check fails, it means this stream is already
                             // corrupted and cannot be recovered, so just close it.
-                            if crc32fast::hash(&read_buffer[8..content_len + 8]) != 
-                                u32::from_be_bytes(read_buffer[4..8].try_into().unwrap()) 
+                            if crc32fast::hash(&read_buffer[8..content_len + 8]) !=
+                                u32::from_be_bytes(read_buffer[4..8].try_into().unwrap())
                             {
                                 break 'a;
                             }

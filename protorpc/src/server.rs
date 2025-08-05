@@ -6,11 +6,12 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
 use crate::{
-    Stream, proto, request::Request, response::Response, task::spawn, transport::IOStream,
+    OrderNumber, Stream, proto, request::Request, response::Response, task::spawn,
+    transport::IOStream,
 };
 
 pub struct BaseRequest<T> {
-    pub order_id: u128,
+    pub order_number: OrderNumber,
     pub service: String,
     pub method: String,
     pub metadata: HashMap<String, String>,
@@ -61,33 +62,33 @@ impl BaseRequest<Stream<Vec<u8>>> {
 
 #[derive(Default)]
 struct RequestFrameAdapter {
-    stream_senders: HashMap<u128, UnboundedSender<Vec<u8>>>,
+    stream_senders: HashMap<OrderNumber, UnboundedSender<Vec<u8>>>,
 }
 
 impl RequestFrameAdapter {
     fn accept(&mut self, frame: proto::Frame) -> Option<BaseRequest<Stream<Vec<u8>>>> {
-        let order_id = frame.order_number();
+        let order_number = frame.order_number();
 
         if (frame.flags & proto::FrameFlags::EndOfStream as u32) != 0 {
-            let _ = self.stream_senders.remove(&order_id);
+            let _ = self.stream_senders.remove(&order_number);
         }
 
         if let Some(payload) = frame.payload {
             match payload {
                 proto::frame::Payload::RequestHeader(header) => {
                     let (tx, rx) = unbounded_channel::<Vec<u8>>();
-                    self.stream_senders.insert(order_id, tx);
+                    self.stream_senders.insert(order_number, tx);
 
                     return Some(BaseRequest {
                         payload: Stream::from(UnboundedReceiverStream::from(rx)),
                         service: frame.service,
                         method: frame.method,
                         metadata: header.metadata,
-                        order_id,
+                        order_number,
                     });
                 }
                 proto::frame::Payload::Request(request) => {
-                    if let Some(tx) = self.stream_senders.get(&order_id).as_ref() {
+                    if let Some(tx) = self.stream_senders.get(&order_number).as_ref() {
                         let _ = tx.send(request.payload);
                     }
                 }
@@ -142,13 +143,14 @@ pub fn startup_server<T>(
 
                 spawn(async move {
                     let mut frame = proto::Frame {
-                        id_high: (request.order_id >> 64) as u64,
-                        id_low: (request.order_id & 0xFFFFFFFFFFFFFFFF) as u64,
                         service: T::NAME.to_string(),
                         method: request.method.clone(),
-                        flags: 0,
                         payload: None,
+                        flags: 0,
+                        ..Default::default()
                     };
+
+                    frame.set_order_number(OrderNumber::default());
 
                     match service.handle(request).await {
                         Ok(mut response) => {
@@ -166,11 +168,15 @@ pub fn startup_server<T>(
                                 }
                             }
 
+                            let mut serial_number = 0;
                             while let Some(payload) = response.payload.next().await {
                                 frame.payload =
                                     Some(proto::frame::Payload::Response(proto::Response {
+                                        serial_number,
                                         payload,
                                     }));
+
+                                serial_number += 1;
 
                                 if frame_sender_.send(frame.clone()).is_err() {
                                     break;

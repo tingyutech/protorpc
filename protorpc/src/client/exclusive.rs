@@ -36,13 +36,13 @@ where
     {
         // Let the external transport layer create an independent stream for the
         // current request.
-        let id = Uuid::new_v4().as_u128();
+        let order_number = Uuid::new_v4().as_u128();
         let IOStream { receiver, sender } = self
             .0
-            .create_stream(id)
+            .create_stream(order_number)
             .await
             .map_err(|e| Error::Transport(format!("{:?}", e)))?;
 
-        req.request(sender, receiver, id).await
+        req.request(sender, receiver, order_number.into()).await
     }
 }

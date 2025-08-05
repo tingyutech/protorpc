@@ -60,7 +60,7 @@ use tokio::sync::{
     mpsc::{UnboundedSender, unbounded_channel},
 };
 
-use crate::{RpcServiceBuilder, proto, task::spawn, transport::IOStream};
+use crate::{OrderNumber, RpcServiceBuilder, proto, task::spawn, transport::IOStream};
 
 // Transport layer sequence number cursor
 static TRASNPORT_NUMBER: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
@@ -83,7 +83,7 @@ pub struct Routes {
     //
     // The response to a request received by a certain transport layer must also
     // be sent to this transport layer
-    lru: Arc<Mutex<LruCache<u128 /* frame order id */, u32 /* transport sequence */>>>,
+    lru: Arc<Mutex<LruCache<OrderNumber, u32 /* transport sequence */>>>,
 }
 
 impl Routes {
@@ -94,7 +94,7 @@ impl Routes {
         let transport_senders: Arc<RwLock<HashMap<u32, UnboundedSender<proto::Frame>>>> =
             Default::default();
 
-        let lru = Arc::new(Mutex::new(LruCache::<u128, u32>::new(
+        let lru = Arc::new(Mutex::new(LruCache::<OrderNumber, u32>::new(
             NonZeroUsize::new(100).unwrap(),
         )));
 
@@ -111,7 +111,7 @@ impl Routes {
                 loop {
                     tokio::select! {
                         Some(frame) = output_bus_receiver.recv() => {
-                            let id = frame.order_number();
+                            let order_number = frame.order_number();
 
                             #[cfg(feature = "log")]
                             log::debug!("routers bus forwarding task received a frame, frame = {:?}", frame);
@@ -119,7 +119,7 @@ impl Routes {
                             let sequence = {
                                 let mut lru = lru_.lock().await;
 
-                                if let Some(sequence) = lru.get(&id).copied() {
+                                if let Some(sequence) = lru.get(&order_number).copied() {
                                     sequence
                                 } else {
                                     if let Some(proto::frame::Payload::RequestHeader(_)) = frame.payload
@@ -147,7 +147,7 @@ impl Routes {
                                             keys.nth(offset).copied().unwrap_or(0)
                                         };
 
-                                        lru.push(id, index);
+                                        lru.push(order_number, index);
 
                                         #[cfg(feature = "log")]
                                         log::debug!(
