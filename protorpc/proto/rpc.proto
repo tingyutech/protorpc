@@ -13,7 +13,8 @@ message RequestHeader {
 }
 
 message Request {
-    bytes payload = 1;
+    uint32 serial_number = 1;
+    bytes payload = 2;
 }
 
 message ResponseHeader {
@@ -23,12 +24,13 @@ message ResponseHeader {
 }
 
 message Response {
-    bytes payload = 1;
+    uint32 serial_number = 1;
+    bytes payload = 2;
 }
 
 message Frame {
-    uint64 id_high = 1;
-    uint64 id_low = 2;
+    uint64 id = 1;
+    uint64 number = 2;
     string service = 3;
     string method = 4;
     uint32 flags = 5;

@@ -153,9 +153,38 @@ mod proto {
     include_proto!("protorpc.core");
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OrderNumber {
+    pub id: u64,
+    pub number: u64,
+}
+
+impl Default for OrderNumber {
+    fn default() -> Self {
+        Self::from(uuid::Uuid::new_v4().as_u128())
+    }
+}
+
+impl From<u128> for OrderNumber {
+    fn from(value: u128) -> Self {
+        Self {
+            id: (value >> 64) as u64,
+            number: value as u64,
+        }
+    }
+}
+
 impl proto::Frame {
-    pub fn order_number(&self) -> u128 {
-        ((self.id_high as u128) << 64) | (self.id_low as u128)
+    pub fn order_number(&self) -> OrderNumber {
+        OrderNumber {
+            id: self.id,
+            number: self.number,
+        }
+    }
+
+    pub fn set_order_number(&mut self, value: OrderNumber) {
+        self.number = value.number;
+        self.id = value.id;
     }
 }
 

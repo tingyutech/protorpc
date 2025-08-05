@@ -13,7 +13,7 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    Stream,
+    OrderNumber, Stream,
     client::{BaseRequest, Error, RequestHandler},
     proto,
     task::spawn,
@@ -23,7 +23,7 @@ use crate::{
 /// Multiplexing implementation
 pub struct Multiplex {
     output_frame_sender: UnboundedSender<proto::Frame>,
-    frame_handlers: Arc<RwLock<HashMap<u128, UnboundedSender<proto::Frame>>>>,
+    frame_handlers: Arc<RwLock<HashMap<OrderNumber, UnboundedSender<proto::Frame>>>>,
 }
 
 impl Multiplex {
@@ -33,7 +33,7 @@ impl Multiplex {
             sender: writable_stream,
         }: IOStream,
     ) -> Self {
-        let frame_handlers: Arc<RwLock<HashMap<u128, UnboundedSender<proto::Frame>>>> =
+        let frame_handlers: Arc<RwLock<HashMap<OrderNumber, UnboundedSender<proto::Frame>>>> =
             Default::default();
 
         {
@@ -110,16 +110,16 @@ impl RequestHandler for Multiplex {
         // All frames sent by the remote response are delivered through this channel.
         let (response_frame_sender, response_frame_receiver) = unbounded_channel::<proto::Frame>();
 
-        let id = Uuid::new_v4().as_u128();
+        let order_number: OrderNumber = Uuid::new_v4().as_u128().into();
         self.frame_handlers
             .write()
             .await
-            .insert(id, response_frame_sender);
+            .insert(order_number, response_frame_sender);
 
         req.request(
             self.output_frame_sender.clone(),
             response_frame_receiver,
-            id,
+            order_number,
         )
         .await
     }

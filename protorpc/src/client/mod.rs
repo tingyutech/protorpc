@@ -21,7 +21,7 @@ use tokio::time::timeout;
 #[cfg(target_family = "wasm")]
 use wasmtimer::tokio::timeout;
 
-use crate::{Error, Stream, proto, task::spawn};
+use crate::{Error, OrderNumber, Stream, proto, task::spawn};
 
 /// Request handler trait
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
@@ -67,7 +67,7 @@ impl<'a, T> BaseRequest<'a, T> {
         mut self,
         writable_stream: UnboundedSender<proto::Frame>,
         mut readable_stream: UnboundedReceiver<proto::Frame>,
-        order_id: u128,
+        order_number: OrderNumber,
     ) -> Result<(Stream<S>, HashMap<String, String>), Error>
     where
         Q: Message,
@@ -84,13 +84,14 @@ impl<'a, T> BaseRequest<'a, T> {
         // The overall process actually simulates HTTP, but with some differences.
 
         let mut frame = proto::Frame {
-            id_high: (order_id >> 64) as u64,
-            id_low: (order_id & 0xFFFFFFFFFFFFFFFF) as u64,
             service: self.service.to_string(),
             method: self.method.to_string(),
             payload: None,
             flags: 0,
+            ..Default::default()
         };
+
+        frame.set_order_number(order_number);
 
         // Response data stream channel.
         let (response_stream_sender, response_stream_receiver) = unbounded_channel();
@@ -130,7 +131,7 @@ impl<'a, T> BaseRequest<'a, T> {
 
             spawn(async move {
                 while let Some(frame) = readable_stream.recv().await {
-                    if frame.order_number() != order_id {
+                    if frame.order_number() != order_number {
                         continue;
                     }
 
@@ -192,6 +193,8 @@ impl<'a, T> BaseRequest<'a, T> {
             let output_frame_sender = writable_stream.clone();
 
             spawn(async move {
+                let mut serial_number = 0;
+
                 while let Some(payload) = self.request.next().await {
                     #[cfg(feature = "log")]
                     log::debug!(
@@ -201,8 +204,11 @@ impl<'a, T> BaseRequest<'a, T> {
                     );
 
                     frame.payload = Some(proto::frame::Payload::Request(proto::Request {
+                        serial_number,
                         payload: payload.encode_to_vec(),
                     }));
+
+                    serial_number += 1;
 
                     #[allow(unused_variables)]
                     if let Err(e) = output_frame_sender.send(frame.clone()) {
