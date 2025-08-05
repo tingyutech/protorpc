@@ -16,7 +16,7 @@ log = { version = "0.4", optional = true }
 [target.'cfg(target_family = "wasm")'.dependencies]
 wasmtimer = "0.4.2"
 wasm-bindgen-futures = "0.4.50"
-crc32fast = { version = "1.5", default-features = false }
+crc32fast = { version = "1.5.0", default-features = false }
 uuid = { version = "1.17.0", features = ["v4", "js"] }
 fastrand = { version = "2.3", default-features = false, features = ["js"] }
 tokio = { version = "1", features = [
@@ -28,7 +28,7 @@ tokio = { version = "1", features = [
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 fastrand = "2.3"
-crc32fast = "1.4"
+crc32fast = "1.5.0"
 uuid = { version = "1.17.0", features = ["v4"] }
 tokio = { version = "1", features = [
     "io-util",
