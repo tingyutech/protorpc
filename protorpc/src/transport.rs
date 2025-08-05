@@ -73,7 +73,7 @@ where
                         frame.encode(&mut send_buffer).unwrap();
 
                         {
-                            let size = send_buffer.len() as u32 - 8;
+                            let size = send_buffer.len() as u64 - 8;
                             send_buffer[..8].copy_from_slice(size.to_be_bytes().as_ref());
                         }
 
