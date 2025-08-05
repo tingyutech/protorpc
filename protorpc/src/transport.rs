@@ -45,10 +45,18 @@ where
                             }
 
                             let content_len =
-                                u64::from_be_bytes(read_buffer[..8].try_into().unwrap()) as usize;
+                                u32::from_be_bytes(read_buffer[..4].try_into().unwrap()) as usize;
 
                             if content_len + 8 > read_buffer.len() {
                                 break;
+                            }
+
+                            // If the CRC check fails, it means this stream is already 
+                            // corrupted and cannot be recovered, so just close it.
+                            if crc32fast::hash(&read_buffer[8..content_len + 8]) != 
+                                u32::from_be_bytes(read_buffer[4..8].try_into().unwrap()) 
+                            {
+                                break 'a;
                             }
 
                             // skip len
@@ -73,8 +81,11 @@ where
                         frame.encode(&mut send_buffer).unwrap();
 
                         {
-                            let size = send_buffer.len() as u64 - 8;
-                            send_buffer[..8].copy_from_slice(size.to_be_bytes().as_ref());
+                            let size = send_buffer.len() as u32 - 8;
+                            send_buffer[..4].copy_from_slice(size.to_be_bytes().as_ref());
+
+                            let checksum = crc32fast::hash(&send_buffer[8..]);
+                            send_buffer[4..8].copy_from_slice(checksum.to_be_bytes().as_ref());
                         }
 
                         #[allow(unused_variables)]
