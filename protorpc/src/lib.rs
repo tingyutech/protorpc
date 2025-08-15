@@ -195,8 +195,8 @@ pub enum Error {
     #[error("transport terminated")]
     Terminated,
     /// Request timeout
-    #[error("request timeout")]
-    Timeout,
+    #[error("request timeout: {0}")]
+    Timeout(String),
     /// Core service has been shutdown
     #[error("core service shutdown")]
     Shutdown,

@@ -245,7 +245,12 @@ impl<'a, T> BaseRequest<'a, T> {
         // try it the result
         let metadata = timeout(self.timeout, response_header_receiver)
             .await
-            .map_err(|_| Error::Timeout)?
+            .map_err(|_| {
+                Error::Timeout(format!(
+                    "service: {}, method: {}",
+                    self.service, self.method
+                ))
+            })?
             .map_err(|_| Error::Shutdown)??;
 
         Ok((
