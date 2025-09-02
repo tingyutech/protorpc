@@ -38,6 +38,24 @@ pub struct Response<T> {
 }
 
 impl<T> Response<T> {
+    /// Create a new response
+    pub fn new(payload: T) -> Self {
+        Self {
+            payload,
+            metadata: Default::default(),
+        }
+    }
+
+    /// Get a reference to the message
+    pub fn get_ref(&self) -> &T {
+        &self.payload
+    }
+
+    /// Get a mutable reference to the message
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.payload
+    }
+
     /// Consumes `self`, returning the payload.
     pub fn into_inner(self) -> T {
         self.payload
@@ -100,26 +118,5 @@ impl<T> Deref for Response<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.payload
-    }
-}
-
-impl<T> From<T> for Response<T> {
-    fn from(payload: T) -> Self {
-        Self {
-            payload,
-            metadata: Default::default(),
-        }
-    }
-}
-
-impl<T> AsRef<T> for Response<T> {
-    fn as_ref(&self) -> &T {
-        &self.payload
-    }
-}
-
-impl<T> AsMut<T> for Response<T> {
-    fn as_mut(&mut self) -> &mut T {
-        &mut self.payload
     }
 }

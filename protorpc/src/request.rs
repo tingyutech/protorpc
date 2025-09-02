@@ -47,6 +47,25 @@ pub struct Request<T> {
 }
 
 impl<T> Request<T> {
+    /// Create a new request
+    pub fn new(payload: T) -> Self {
+        Self {
+            payload,
+            timeout: DEFAULT_TIMEOUT,
+            metadata: Default::default(),
+        }
+    }
+
+    /// Get a reference to the message
+    pub fn get_ref(&self) -> &T {
+        &self.payload
+    }
+
+    /// Get a mutable reference to the message
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.payload
+    }
+
     /// Consumes `self`, returning the payload.
     pub fn into_inner(self) -> T {
         self.payload
@@ -82,27 +101,5 @@ impl<T> Deref for Request<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.payload
-    }
-}
-
-impl<T> AsRef<T> for Request<T> {
-    fn as_ref(&self) -> &T {
-        &self.payload
-    }
-}
-
-impl<T> AsMut<T> for Request<T> {
-    fn as_mut(&mut self) -> &mut T {
-        &mut self.payload
-    }
-}
-
-impl<T> From<T> for Request<T> {
-    fn from(payload: T) -> Self {
-        Self {
-            payload,
-            timeout: DEFAULT_TIMEOUT,
-            metadata: Default::default(),
-        }
     }
 }

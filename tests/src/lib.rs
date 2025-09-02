@@ -21,7 +21,7 @@ impl proto::server::EchoServerHandler for EchoService {
         &self,
         req: Request<proto::EchoRequest>,
     ) -> Result<Response<proto::EchoResponse>, Self::Error> {
-        let mut res = Response::from(proto::EchoResponse {
+        let mut res = Response::new(proto::EchoResponse {
             message: format!("response: {}", req.payload.message),
         });
 
@@ -53,7 +53,7 @@ impl proto::server::EchoServerHandler for EchoService {
             }
         });
 
-        let mut res = Response::from(UnboundedReceiverStream::from(rx));
+        let mut res = Response::new(UnboundedReceiverStream::from(rx));
         res.set_metadata(
             req.metadata
                 .iter()
@@ -83,7 +83,7 @@ impl proto::server::EchoServerHandler for EchoService {
             });
         });
 
-        let mut res = Response::from(rx.await?);
+        let mut res = Response::new(rx.await?);
         res.set_metadata(
             req.metadata
                 .iter()
@@ -100,7 +100,7 @@ impl proto::server::EchoServerHandler for EchoService {
         &self,
         req: Request<proto::EchoRequest>,
     ) -> Result<Response<Self::ServerStreamingEchoStream>, Self::Error> {
-        let mut res = Response::from(tokio_stream::once(proto::EchoResponse {
+        let mut res = Response::new(tokio_stream::once(proto::EchoResponse {
             message: format!("response: {}", req.payload.message),
         }));
 
@@ -158,7 +158,7 @@ mod tests {
 
         {
             let metadata = HashMap::from([("type".to_string(), "unary_echo".to_string())]);
-            let mut req = Request::from(proto::EchoRequest {
+            let mut req = Request::new(proto::EchoRequest {
                 message: "unary_echo".to_string(),
             });
 
@@ -177,7 +177,7 @@ mod tests {
         {
             let metadata =
                 HashMap::from([("type".to_string(), "client_streaming_echo".to_string())]);
-            let mut req = Request::from(tokio_stream::iter((0..5).into_iter().map(|i| {
+            let mut req = Request::new(tokio_stream::iter((0..5).into_iter().map(|i| {
                 proto::EchoRequest {
                     message: format!("client_streaming_echo: {}", i),
                 }
@@ -201,7 +201,7 @@ mod tests {
         {
             let metadata =
                 HashMap::from([("type".to_string(), "server_streaming_echo".to_string())]);
-            let mut req = Request::from(proto::EchoRequest {
+            let mut req = Request::new(proto::EchoRequest {
                 message: "server_streaming_echo".to_string(),
             });
 
@@ -225,7 +225,7 @@ mod tests {
                 "type".to_string(),
                 "bidirectional_streaming_echo".to_string(),
             )]);
-            let mut req = Request::from(tokio_stream::iter((0..5).into_iter().map(|i| {
+            let mut req = Request::new(tokio_stream::iter((0..5).into_iter().map(|i| {
                 proto::EchoRequest {
                     message: format!("bidirectional_streaming_echo: {}", i),
                 }
