@@ -199,7 +199,7 @@ pub enum Error {
     Timeout(String),
     /// Core service has been shutdown
     #[error("core service shutdown")]
-    Shutdown,
+    Shutdown(String),
     /// Invalid response
     #[error("invalid response: {0}")]
     InvalidResponse(#[from] prost::DecodeError),

@@ -251,7 +251,7 @@ impl<'a, T> BaseRequest<'a, T> {
                     self.service, self.method
                 ))
             })?
-            .map_err(|_| Error::Shutdown)??;
+            .map_err(|e| Error::Shutdown(format!("{:?}", e)))??;
 
         Ok((
             Stream::from(UnboundedReceiverStream::from(response_stream_receiver)),
