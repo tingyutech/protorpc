@@ -2,12 +2,6 @@ syntax = "proto3";
 
 package protorpc.core;
 
-enum FrameFlags {
-    None = 0;
-    EndOfStream = 1;
-    Empty = 2;
-}
-
 message RequestHeader {
     map<string, string> metadata = 1;
 }
@@ -28,16 +22,21 @@ message Response {
     bytes payload = 2;
 }
 
+message EndOfStream {
+    bool success = 1;
+    optional string error = 2;
+}
+
 message Frame {
     uint64 id = 1;
     uint64 number = 2;
     string service = 3;
     string method = 4;
-    uint32 flags = 5;
     oneof payload {
-        RequestHeader request_header = 6;
-        Request request = 7;
-        ResponseHeader response_header = 8;
-        Response response = 9;
+        RequestHeader request_header = 5;
+        Request request = 6;
+        ResponseHeader response_header = 7;
+        Response response = 8;
+        EndOfStream end_of_stream = 9;
     }
 }

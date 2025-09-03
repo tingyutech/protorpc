@@ -22,7 +22,7 @@ use tokio::time::timeout;
 #[cfg(target_family = "wasm")]
 use wasmtimer::tokio::timeout;
 
-use crate::{Error, OrderNumber, Stream, proto, task::spawn};
+use crate::{proto, task::spawn, Error, InnerError, OrderNumber, Stream};
 
 /// Request handler trait
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
@@ -31,16 +31,16 @@ pub trait RequestHandler {
     /// Handle request
     ///
     /// This method is used internally and should not concern external users.
-    async fn request<T, Q, S, A, B>(
+    async fn request<T, Q, S, Qe, Se>(
         &self,
         base_request: BaseRequest<'_, T>,
-    ) -> Result<(Stream<Result<S, A>>, HashMap<String, String>), Error<()>>
+    ) -> Result<(Stream<Result<S, Error<Se>>>, HashMap<String, String>), Error<Se>>
     where
         Q: Message,
         S: Message + Unpin + Default + 'static,
-        T: futures_core::Stream<Item = Q> + Unpin + Send + 'static,
-        A: Serialize + Send + 'static,
-        B: DeserializeOwned + Send + 'static;
+        T: futures_core::Stream<Item = Result<Q, Error<Qe>>> + Unpin + Send + 'static,
+        Qe: DeserializeOwned + Send + 'static,
+        Se: Serialize + Send + 'static;
 }
 
 /// Basic request information
@@ -66,18 +66,16 @@ impl<'a, T> std::fmt::Debug for BaseRequest<'a, T> {
 }
 
 impl<'a, T> BaseRequest<'a, T> {
-    async fn request<Q, S, A, B>(
+    async fn request<Q, S>(
         mut self,
         writable_stream: UnboundedSender<proto::Frame>,
         mut readable_stream: UnboundedReceiver<proto::Frame>,
         order_number: OrderNumber,
-    ) -> Result<(Stream<Result<S, Error<B>>>, HashMap<String, String>), Error<()>>
+    ) -> Result<(Stream<Result<S, String>>, HashMap<String, String>), String>
     where
         Q: Message,
         S: Message + Unpin + Default + 'static,
-        T: futures_core::Stream<Item = Result<Q, A>> + Unpin + Send + 'static,
-        A: Serialize + Send + 'static,
-        B: DeserializeOwned + Send + 'static,
+        T: futures_core::Stream<Item = Result<Q, String>> + Unpin + Send + 'static,
     {
         #[cfg(feature = "log")]
         log::debug!(
@@ -92,7 +90,6 @@ impl<'a, T> BaseRequest<'a, T> {
             service: self.service.to_string(),
             method: self.method.to_string(),
             payload: None,
-            flags: 0,
             ..Default::default()
         };
 
@@ -103,7 +100,7 @@ impl<'a, T> BaseRequest<'a, T> {
 
         // Channel for delivering the response header.
         let (response_header_sender, response_header_receiver) =
-            oneshot::channel::<Result<HashMap<String, String>, Error<B>>>();
+            oneshot::channel::<Result<HashMap<String, String>, String>>();
 
         #[cfg(feature = "log")]
         log::debug!(
@@ -143,22 +140,6 @@ impl<'a, T> BaseRequest<'a, T> {
                     #[cfg(feature = "log")]
                     log::debug!("client core received a response frame, frame = {:?}", frame);
 
-                    // The stream has ended, terminate the process. If the first packet is the end
-                    // of the stream, the stream is invalid.
-                    if (frame.flags & proto::FrameFlags::EndOfStream as u32) != 0 {
-                        if let Some(tx) = response_header_sender.take() {
-                            let _ = tx.send(Err(Error::Io(
-                                std::io::Error::new(
-                                    std::io::ErrorKind::InvalidInput,
-                                    "InvalidStream",
-                                )
-                                .to_string(),
-                            )));
-                        }
-
-                        break;
-                    }
-
                     if let Some(payload) = frame.payload {
                         match payload {
                             proto::frame::Payload::Response(response) => {
@@ -169,8 +150,7 @@ impl<'a, T> BaseRequest<'a, T> {
                                         std::io::Error::new(
                                             std::io::ErrorKind::InvalidInput,
                                             "InvalidStream",
-                                        )
-                                        .to_string(),
+                                        ),
                                     )));
 
                                     break;
@@ -206,6 +186,17 @@ impl<'a, T> BaseRequest<'a, T> {
                                     })
                                 });
                             }
+                            proto::frame::Payload::EndOfStream(frame) => {
+                                if let Some(e) = frame.error {
+                                    let _ = response_stream_sender.send({
+                                        serde_json::from_str(&e).map(Err).unwrap_or_else(|e| {
+                                            Err(Error::BaseError(e.to_string()))
+                                        })
+                                    });
+                                }
+
+                                break;
+                            }
                             _ => (),
                         }
                     }
@@ -219,6 +210,8 @@ impl<'a, T> BaseRequest<'a, T> {
             spawn(async move {
                 let mut serial_number = 0;
 
+                let mut result = None;
+
                 while let Some(payload) = self.request.next().await {
                     #[cfg(feature = "log")]
                     log::debug!(
@@ -226,6 +219,15 @@ impl<'a, T> BaseRequest<'a, T> {
                         frame.service,
                         order_number
                     );
+
+                    let payload = match payload {
+                        Ok(it) => it,
+                        Err(e) => {
+                            result = Some(e);
+
+                            break;
+                        }
+                    };
 
                     frame.payload = Some(proto::frame::Payload::Request(proto::Request {
                         serial_number,
@@ -250,9 +252,21 @@ impl<'a, T> BaseRequest<'a, T> {
 
                 // After the stream is closed, an `EndOfStream` packet needs to be sent.
                 {
-                    frame.payload = None;
-                    frame.flags =
-                        proto::FrameFlags::EndOfStream as u32 | proto::FrameFlags::Empty as u32;
+                    frame.payload = Some(
+                        result
+                            .map(|it| {
+                                proto::frame::Payload::EndOfStream(proto::EndOfStream {
+                                    success: false,
+                                    error: Some(serde_json::to_string(&InnerError::from(it)).unwrap()),
+                                })
+                            })
+                            .unwrap_or_else(|| {
+                                proto::frame::Payload::EndOfStream(proto::EndOfStream {
+                                    success: true,
+                                    error: None,
+                                })
+                            }),
+                    );
 
                     let _ = output_frame_sender.send(frame.clone());
 
@@ -270,12 +284,17 @@ impl<'a, T> BaseRequest<'a, T> {
         let metadata = timeout(self.timeout, response_header_receiver)
             .await
             .map_err(|_| {
-                Error::Timeout(format!(
-                    "service: {}, method: {}",
-                    self.service, self.method
-                ))
+                Error::io_error(
+                    std::io::ErrorKind::TimedOut,
+                    &format!("service: {}, method: {}", self.service, self.method)
+                )
             })?
-            .map_err(|e| Error::Shutdown(format!("{:?}", e)))??;
+            .map_err(|e| {
+                Error::io_error(
+                    std::io::ErrorKind::ConnectionAborted,
+                    &e.to_string()
+                )
+            })??;
 
         Ok((
             Stream::from(UnboundedReceiverStream::from(response_stream_receiver)),
