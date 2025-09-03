@@ -25,14 +25,15 @@ impl<F> RequestHandler for Exclusive<F>
 where
     F: Transport,
 {
-    async fn request<T, Q, S>(
+    async fn request<T, Q, S, E>(
         &self,
         req: BaseRequest<'_, T>,
-    ) -> Result<(Stream<S>, HashMap<String, String>), Error>
+    ) -> Result<(Stream<Result<S, E>>, HashMap<String, String>), Error>
     where
         Q: Message,
         S: Message + Unpin + Default + 'static,
         T: futures_core::Stream<Item = Q> + Unpin + Send + 'static,
+        E: Send + 'static,
     {
         // Let the external transport layer create an independent stream for the
         // current request.

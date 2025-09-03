@@ -110,7 +110,7 @@ pub use async_trait::async_trait;
 pub use futures_core;
 pub use tokio_stream;
 
-use thiserror::Error;
+use serde::{Deserialize, Serialize};
 
 /// Include generated proto server and client items.
 ///
@@ -189,29 +189,17 @@ impl proto::Frame {
 }
 
 /// Errors that occur during requests
-#[derive(Debug, Error)]
-pub enum Error {
-    /// Transport layer has been terminated
-    #[error("transport terminated")]
-    Terminated,
-    /// Request timeout
-    #[error("request timeout: {0}")]
-    Timeout(String),
-    /// Core service has been shutdown
-    #[error("core service shutdown")]
-    Shutdown(String),
-    /// Invalid response
-    #[error("invalid response: {0}")]
-    InvalidResponse(#[from] prost::DecodeError),
-    /// Invalid request stream/response stream
-    #[error("invalid response stream")]
-    InvalidStream,
-    /// Server error while processing request
-    #[error("error response: {0}")]
-    ErrorResponse(String),
-    /// Transport error
-    #[error("transport response: {0}")]
-    Transport(String),
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Error<T> {
+    Io(String),
+    BaseError(String),
+    Other(T),
+}
+
+impl<T> From<std::io::Error> for Error<T> {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value.to_string())
+    }
 }
 
 /// A unidirectional stream

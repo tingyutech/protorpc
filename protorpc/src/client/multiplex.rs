@@ -98,14 +98,15 @@ impl Multiplex {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 impl RequestHandler for Multiplex {
-    async fn request<T, Q, S>(
+    async fn request<T, Q, S, E>(
         &self,
         req: BaseRequest<'_, T>,
-    ) -> Result<(Stream<S>, HashMap<String, String>), Error>
+    ) -> Result<(Stream<Result<S, E>>, HashMap<String, String>), Error>
     where
         Q: Message,
         S: Message + Unpin + Default + 'static,
         T: futures_core::Stream<Item = Q> + Unpin + Send + 'static,
+        E: Send + 'static,
     {
         // All frames sent by the remote response are delivered through this channel.
         let (response_frame_sender, response_frame_receiver) = unbounded_channel::<proto::Frame>();

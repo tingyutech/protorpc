@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use prost::Message;
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::{
     sync::{
         mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
@@ -30,14 +31,16 @@ pub trait RequestHandler {
     /// Handle request
     ///
     /// This method is used internally and should not concern external users.
-    async fn request<T, Q, S>(
+    async fn request<T, Q, S, A, B>(
         &self,
         base_request: BaseRequest<'_, T>,
-    ) -> Result<(Stream<S>, HashMap<String, String>), Error>
+    ) -> Result<(Stream<Result<S, A>>, HashMap<String, String>), Error<()>>
     where
         Q: Message,
         S: Message + Unpin + Default + 'static,
-        T: futures_core::Stream<Item = Q> + Unpin + Send + 'static;
+        T: futures_core::Stream<Item = Q> + Unpin + Send + 'static,
+        A: Serialize + Send + 'static,
+        B: DeserializeOwned + Send + 'static;
 }
 
 /// Basic request information
@@ -63,16 +66,18 @@ impl<'a, T> std::fmt::Debug for BaseRequest<'a, T> {
 }
 
 impl<'a, T> BaseRequest<'a, T> {
-    async fn request<Q, S>(
+    async fn request<Q, S, A, B>(
         mut self,
         writable_stream: UnboundedSender<proto::Frame>,
         mut readable_stream: UnboundedReceiver<proto::Frame>,
         order_number: OrderNumber,
-    ) -> Result<(Stream<S>, HashMap<String, String>), Error>
+    ) -> Result<(Stream<Result<S, Error<B>>>, HashMap<String, String>), Error<()>>
     where
         Q: Message,
         S: Message + Unpin + Default + 'static,
-        T: futures_core::Stream<Item = Q> + Unpin + Send + 'static,
+        T: futures_core::Stream<Item = Result<Q, A>> + Unpin + Send + 'static,
+        A: Serialize + Send + 'static,
+        B: DeserializeOwned + Send + 'static,
     {
         #[cfg(feature = "log")]
         log::debug!(
@@ -98,7 +103,7 @@ impl<'a, T> BaseRequest<'a, T> {
 
         // Channel for delivering the response header.
         let (response_header_sender, response_header_receiver) =
-            oneshot::channel::<Result<HashMap<String, String>, Error>>();
+            oneshot::channel::<Result<HashMap<String, String>, Error<B>>>();
 
         #[cfg(feature = "log")]
         log::debug!(
@@ -114,9 +119,9 @@ impl<'a, T> BaseRequest<'a, T> {
                 metadata: self.metadata,
             }));
 
-            writable_stream
-                .send(frame.clone())
-                .map_err(|_| Error::Terminated)?;
+            writable_stream.send(frame.clone()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "terminated")
+            })?;
 
             #[cfg(feature = "log")]
             log::debug!(
@@ -142,7 +147,13 @@ impl<'a, T> BaseRequest<'a, T> {
                     // of the stream, the stream is invalid.
                     if (frame.flags & proto::FrameFlags::EndOfStream as u32) != 0 {
                         if let Some(tx) = response_header_sender.take() {
-                            let _ = tx.send(Err(Error::InvalidStream));
+                            let _ = tx.send(Err(Error::Io(
+                                std::io::Error::new(
+                                    std::io::ErrorKind::InvalidInput,
+                                    "InvalidStream",
+                                )
+                                .to_string(),
+                            )));
                         }
 
                         break;
@@ -154,7 +165,13 @@ impl<'a, T> BaseRequest<'a, T> {
                                 // Received a response before receiving the response header, this is
                                 // an invalid stream.
                                 if let Some(tx) = response_header_sender.take() {
-                                    let _ = tx.send(Err(Error::InvalidStream));
+                                    let _ = tx.send(Err(Error::Io(
+                                        std::io::Error::new(
+                                            std::io::ErrorKind::InvalidInput,
+                                            "InvalidStream",
+                                        )
+                                        .to_string(),
+                                    )));
 
                                     break;
                                 }
@@ -162,7 +179,7 @@ impl<'a, T> BaseRequest<'a, T> {
                                 // Any error here will cause the current stream to be terminated
                                 // directly.
                                 if let Ok(payload) = S::decode(response.payload.as_ref()) {
-                                    if response_stream_sender.send(payload).is_err() {
+                                    if response_stream_sender.send(Ok(payload)).is_err() {
                                         break;
                                     }
                                 } else {
@@ -174,11 +191,18 @@ impl<'a, T> BaseRequest<'a, T> {
                                     it.send(if header.success {
                                         Ok(header.metadata)
                                     } else {
-                                        Err(Error::ErrorResponse(
-                                            header
-                                                .error
-                                                .unwrap_or_else(|| "Unknown error".to_string()),
-                                        ))
+                                        Err(header
+                                            .error
+                                            .map(|it| {
+                                                serde_json::from_str(&it)
+                                                    .map(Error::Other)
+                                                    .unwrap_or_else(|e| {
+                                                        Error::BaseError(e.to_string())
+                                                    })
+                                            })
+                                            .unwrap_or_else(|| {
+                                                Error::BaseError("Unknown error".to_string())
+                                            }))
                                     })
                                 });
                             }

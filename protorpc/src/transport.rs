@@ -1,7 +1,5 @@
 //! Transport layer related types
 
-use std::fmt::Debug;
-
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
@@ -120,7 +118,5 @@ where
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 pub trait Transport: Send + Sync {
-    type Error: Debug;
-
-    async fn create_stream(&self, id: u128) -> Result<IOStream, Self::Error>;
+    async fn create_stream(&self, id: u128) -> Result<IOStream, std::io::Error>;
 }
