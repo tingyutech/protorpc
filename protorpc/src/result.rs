@@ -155,6 +155,10 @@ impl RpcError {
         Self::Io(IoError::new(ErrorKind::AlreadyExists, message).into())
     }
 
+    pub fn unsupported(message: &str) -> Self {
+        Self::Io(IoError::new(ErrorKind::Unsupported, message).into())
+    }
+
     pub fn to_string(&self) -> String {
         serde_json::to_string(self).unwrap()
     }
