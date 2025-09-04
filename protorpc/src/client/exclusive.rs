@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 use crate::{
     Stream,
-    client::{BaseRequest, Error, RequestHandler},
+    client::{BaseRequest, RequestHandler},
+    result::RpcError,
     transport::{IOStream, Transport},
 };
 
@@ -25,15 +26,14 @@ impl<F> RequestHandler for Exclusive<F>
 where
     F: Transport,
 {
-    async fn request<T, Q, S, E>(
+    async fn request<T, Q, S>(
         &self,
         req: BaseRequest<'_, T>,
-    ) -> Result<(Stream<Result<S, E>>, HashMap<String, String>), Error>
+    ) -> Result<(Stream<Result<S, RpcError>>, HashMap<String, String>), RpcError>
     where
         Q: Message,
         S: Message + Unpin + Default + 'static,
-        T: futures_core::Stream<Item = Q> + Unpin + Send + 'static,
-        E: Send + 'static,
+        T: futures_core::Stream<Item = Result<Q, RpcError>> + Unpin + Send + 'static,
     {
         // Let the external transport layer create an independent stream for the
         // current request.
@@ -42,7 +42,7 @@ where
             .0
             .create_stream(order_number)
             .await
-            .map_err(|e| Error::Transport(format!("{:?}", e)))?;
+            .map_err(|e| RpcError::from(e))?;
 
         req.request(sender, receiver, order_number.into()).await
     }

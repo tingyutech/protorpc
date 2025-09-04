@@ -14,7 +14,7 @@ pub fn make_server(service: &Service) -> TokenStream {
         let reqponse_stream_ty = if method.server_streaming {
             quote! {
                 type #stream_ty: protorpc::futures_core::Stream<
-                    Item = super::#response_ty
+                    Item = Result<super::#response_ty, protorpc::result::RpcError>
                 > + std::marker::Send + Unpin + 'static;
             }
         } else {
@@ -23,7 +23,7 @@ pub fn make_server(service: &Service) -> TokenStream {
 
         // If the request is a stream, the request type is the protorpc stream type.
         let request = if method.client_streaming {
-            quote! { protorpc::request::Request<protorpc::Stream<super::#request_ty>> }
+            quote! { protorpc::request::Request<protorpc::Stream<Result<super::#request_ty, protorpc::result::RpcError>>> }
         } else {
             quote! { protorpc::request::Request<super::#request_ty> }
         };
@@ -42,7 +42,7 @@ pub fn make_server(service: &Service) -> TokenStream {
             async fn #func(
                 &self,
                 req: #request
-            ) -> std::result::Result<#response, Self::Error>;
+            ) -> std::result::Result<#response, protorpc::result::RpcError>;
         }
     });
 
@@ -54,7 +54,7 @@ pub fn make_server(service: &Service) -> TokenStream {
         let request = if method.client_streaming {
             quote! { request.into_stream() }
         } else {
-            quote! { request.into_once().await.ok_or_else(|| "Not enough request data")? }
+            quote! { request.into_once().await? }
         };
 
         let response_into = if method.server_streaming {
@@ -66,7 +66,7 @@ pub fn make_server(service: &Service) -> TokenStream {
         quote! {
             #name => {
                 Ok(
-                    self.0.#func(#request).await.map_err(|e| format!("{:?}", e))?.#response_into
+                    self.0.#func(#request).await?.#response_into
                 )
             },
         }
@@ -80,8 +80,6 @@ pub fn make_server(service: &Service) -> TokenStream {
         #[cfg_attr(target_family = "wasm", protorpc::async_trait(?Send))]
         #[cfg_attr(not(target_family = "wasm"), protorpc::async_trait)]
         pub trait #service_handler_name: std::marker::Send + std::marker::Sync + 'static {
-            type Error: std::fmt::Debug;
-
             #(#methods)*
         }
 
@@ -92,16 +90,16 @@ pub fn make_server(service: &Service) -> TokenStream {
         impl<T: #service_handler_name> protorpc::server::ServerService for #service_name<T> {
             const NAME: &'static str = #service_attr;
 
-            type Error = String;
-
             async fn handle(
                 &self,
-                request: protorpc::server::BaseRequest<protorpc::Stream<Vec<u8>>>,
-            ) -> Result<protorpc::response::Response<protorpc::Stream<Vec<u8>>>, Self::Error> {
-
+                request: protorpc::server::BaseRequest<protorpc::Stream<Result<Vec<u8>, protorpc::result::RpcError>>>,
+            ) -> Result<
+                protorpc::response::Response<protorpc::Stream<Result<Vec<u8>, protorpc::result::RpcError>>>,
+                protorpc::result::RpcError
+            > {
                 match request.method.as_str() {
                     #(#router)*
-                    _ => Err("Method not found in current service".to_string()),
+                    _ => Err(protorpc::result::RpcError::not_found("Method not found in current service")),
                 }
             }
         }

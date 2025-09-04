@@ -14,8 +14,9 @@ use uuid::Uuid;
 
 use crate::{
     OrderNumber, Stream,
-    client::{BaseRequest, Error, RequestHandler},
+    client::{BaseRequest, RequestHandler},
     proto,
+    result::{IoResult, RpcError},
     task::spawn,
     transport::IOStream,
 };
@@ -23,7 +24,7 @@ use crate::{
 /// Multiplexing implementation
 pub struct Multiplex {
     output_frame_sender: UnboundedSender<proto::Frame>,
-    frame_handlers: Arc<RwLock<HashMap<OrderNumber, UnboundedSender<proto::Frame>>>>,
+    frame_handlers: Arc<RwLock<HashMap<OrderNumber, UnboundedSender<IoResult<proto::Frame>>>>>,
 }
 
 impl Multiplex {
@@ -33,23 +34,37 @@ impl Multiplex {
             sender: writable_stream,
         }: IOStream,
     ) -> Self {
-        let frame_handlers: Arc<RwLock<HashMap<OrderNumber, UnboundedSender<proto::Frame>>>> =
-            Default::default();
+        let frame_handlers: Arc<
+            RwLock<HashMap<OrderNumber, UnboundedSender<IoResult<proto::Frame>>>>,
+        > = Default::default();
 
         {
             let frame_handlers_ = frame_handlers.clone();
 
             spawn(async move {
                 while let Some(frame) = readable_stream.recv().await {
-                    #[cfg(feature = "log")]
-                    log::debug!(
-                        "client core bus received a response frame, frame = {:?}",
-                        frame
-                    );
+                    match frame {
+                        Ok(frame) => {
+                            #[cfg(feature = "log")]
+                            log::debug!(
+                                "client core bus received a response frame, frame = {:?}",
+                                frame
+                            );
 
-                    if let Some(handler) = frame_handlers_.read().await.get(&frame.order_number()) {
-                        if !handler.is_closed() {
-                            let _ = handler.send(frame);
+                            if let Some(handler) =
+                                frame_handlers_.read().await.get(&frame.order_number())
+                            {
+                                if !handler.is_closed() {
+                                    let _ = handler.send(Ok(frame));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            for (_, tx) in frame_handlers_.write().await.drain() {
+                                let _ = tx.send(Err(std::io::Error::new(e.kind(), e.to_string())));
+                            }
+
+                            break;
                         }
                     }
                 }
@@ -98,18 +113,18 @@ impl Multiplex {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 impl RequestHandler for Multiplex {
-    async fn request<T, Q, S, E>(
+    async fn request<T, Q, S>(
         &self,
         req: BaseRequest<'_, T>,
-    ) -> Result<(Stream<Result<S, E>>, HashMap<String, String>), Error>
+    ) -> Result<(Stream<Result<S, RpcError>>, HashMap<String, String>), RpcError>
     where
         Q: Message,
         S: Message + Unpin + Default + 'static,
-        T: futures_core::Stream<Item = Q> + Unpin + Send + 'static,
-        E: Send + 'static,
+        T: futures_core::Stream<Item = Result<Q, RpcError>> + Unpin + Send + 'static,
     {
         // All frames sent by the remote response are delivered through this channel.
-        let (response_frame_sender, response_frame_receiver) = unbounded_channel::<proto::Frame>();
+        let (response_frame_sender, response_frame_receiver) =
+            unbounded_channel::<IoResult<proto::Frame>>();
 
         let order_number: OrderNumber = Uuid::new_v4().as_u128().into();
         self.frame_handlers

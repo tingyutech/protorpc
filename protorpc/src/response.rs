@@ -27,7 +27,7 @@ use prost::Message;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
-use crate::{Stream, task::spawn};
+use crate::{Stream, result::RpcError, task::spawn};
 
 /// Represents a response
 pub struct Response<T> {
@@ -80,9 +80,9 @@ impl<T: Message> Response<T> {
     /// Convert the response to a once response.
     ///
     /// This is only used internally and should not concern external users.
-    pub fn into_once(self) -> Response<Stream<Vec<u8>>> {
+    pub fn into_once(self) -> Response<Stream<Result<Vec<u8>, RpcError>>> {
         Response {
-            payload: Stream::once(self.payload.encode_to_vec()),
+            payload: Stream::once(Ok(self.payload.encode_to_vec())),
             metadata: self.metadata,
         }
     }
@@ -91,16 +91,22 @@ impl<T: Message> Response<T> {
 impl<T, S> Response<S>
 where
     T: Message + Unpin + 'static,
-    S: futures_core::Stream<Item = T> + Unpin + Send + 'static,
+    S: futures_core::Stream<Item = Result<T, RpcError>> + Unpin + Send + 'static,
 {
     /// Convert the response to a stream response.
     ///
     /// This is only used internally and should not concern external users.
-    pub fn into_stream(mut self) -> Response<Stream<Vec<u8>>> {
-        let (tx, rx) = unbounded_channel::<Vec<u8>>();
+    pub fn into_stream(mut self) -> Response<Stream<Result<Vec<u8>, RpcError>>> {
+        let (tx, rx) = unbounded_channel::<Result<Vec<u8>, RpcError>>();
         spawn(async move {
             while let Some(item) = self.payload.next().await {
-                if tx.send(item.encode_to_vec()).is_err() {
+                if tx
+                    .send(
+                        item.map(|it| it.encode_to_vec())
+                            .map_err(|e| RpcError::from(e)),
+                    )
+                    .is_err()
+                {
                     break;
                 }
             }

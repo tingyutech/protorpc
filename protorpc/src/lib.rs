@@ -96,6 +96,7 @@
 
 pub mod request;
 pub mod response;
+pub mod result;
 pub mod routers;
 pub mod transport;
 
@@ -108,9 +109,8 @@ pub mod server;
 /// see: <https://docs.rs/async-trait/latest/async_trait>
 pub use async_trait::async_trait;
 pub use futures_core;
+pub use serde;
 pub use tokio_stream;
-
-use serde::{Deserialize, Serialize};
 
 /// Include generated proto server and client items.
 ///
@@ -185,108 +185,6 @@ impl proto::Frame {
     pub fn set_order_number(&mut self, value: OrderNumber) {
         self.number = value.number;
         self.id = value.id;
-    }
-}
-
-/// Errors that occur during requests
-#[derive(Debug)]
-pub enum Error<T> {
-    Io(std::io::Error),
-    Rpc(T),
-}
-
-impl<T> Error<T> {
-    fn io_error(kind: std::io::ErrorKind, message: &str) -> Self {
-        Self::Io(std::io::Error::new(kind, message))
-    }
-}
-
-#[derive(Deserialize, Serialize)]
-struct IoError {
-    kind: String,
-    message: String,
-}
-
-impl From<std::io::Error> for IoError {
-    fn from(error: std::io::Error) -> Self {
-        Self {
-            kind: error.kind().to_string(),
-            message: error.to_string(),
-        }
-    }
-}
-
-impl Into<std::io::Error> for IoError {
-    fn into(self) -> std::io::Error {
-        std::io::Error::new(
-            match self.kind.as_str() {
-                "address in use" => std::io::ErrorKind::AddrInUse,
-                "address not available" => std::io::ErrorKind::AddrNotAvailable,
-                "entity already exists" => std::io::ErrorKind::AlreadyExists,
-                "argument list too long" => std::io::ErrorKind::ArgumentListTooLong,
-                "broken pipe" => std::io::ErrorKind::BrokenPipe,
-                "connection aborted" => std::io::ErrorKind::ConnectionAborted,
-                "connection refused" => std::io::ErrorKind::ConnectionRefused,
-                "connection reset" => std::io::ErrorKind::ConnectionReset,
-                "cross-device link or rename" => std::io::ErrorKind::CrossesDevices,
-                "deadlock" => std::io::ErrorKind::Deadlock,
-                "directory not empty" => std::io::ErrorKind::DirectoryNotEmpty,
-                "executable file busy" => std::io::ErrorKind::ExecutableFileBusy,
-                "file too large" => std::io::ErrorKind::FileTooLarge,
-                "host unreachable" => std::io::ErrorKind::HostUnreachable,
-                "operation interrupted" => std::io::ErrorKind::Interrupted,
-                "invalid data" => std::io::ErrorKind::InvalidData,
-                "invalid filename" => std::io::ErrorKind::InvalidFilename,
-                "invalid input parameter" => std::io::ErrorKind::InvalidInput,
-                "is a directory" => std::io::ErrorKind::IsADirectory,
-                "network down" => std::io::ErrorKind::NetworkDown,
-                "network unreachable" => std::io::ErrorKind::NetworkUnreachable,
-                "not a directory" => std::io::ErrorKind::NotADirectory,
-                "not connected" => std::io::ErrorKind::NotConnected,
-                "entity not found" => std::io::ErrorKind::NotFound,
-                "seek on unseekable file" => std::io::ErrorKind::NotSeekable,
-                "other error" => std::io::ErrorKind::Other,
-                "out of memory" => std::io::ErrorKind::OutOfMemory,
-                "permission denied" => std::io::ErrorKind::PermissionDenied,
-                "quota exceeded" => std::io::ErrorKind::QuotaExceeded,
-                "read-only filesystem or storage medium" => std::io::ErrorKind::ReadOnlyFilesystem,
-                "resource busy" => std::io::ErrorKind::ResourceBusy,
-                "stale network file handle" => std::io::ErrorKind::StaleNetworkFileHandle,
-                "no storage space" => std::io::ErrorKind::StorageFull,
-                "timed out" => std::io::ErrorKind::TimedOut,
-                "too many links" => std::io::ErrorKind::TooManyLinks,
-                "unexpected end of file" => std::io::ErrorKind::UnexpectedEof,
-                "unsupported" => std::io::ErrorKind::Unsupported,
-                "operation would block" => std::io::ErrorKind::WouldBlock,
-                "write zero" => std::io::ErrorKind::WriteZero,
-                _ => std::io::ErrorKind::Other,
-            },
-            self.message,
-        )
-    }
-}
-
-#[derive(Deserialize, Serialize)]
-enum InnerError<T> {
-    Io(IoError),
-    Rpc(T),
-}
-
-impl<T> Into<Error<T>> for InnerError<T> {
-    fn into(self) -> Error<T> {
-        match self {
-            InnerError::Io(e) => Error::Io(e.into()),
-            InnerError::Rpc(e) => Error::Rpc(e),
-        }
-    }
-}
-
-impl<T> From<Error<T>> for InnerError<T> {
-    fn from(value: Error<T>) -> Self {
-        match value {
-            Error::Io(e) => InnerError::Io(e.into()),
-            Error::Rpc(e) => InnerError::Rpc(e),
-        }
     }
 }
 
