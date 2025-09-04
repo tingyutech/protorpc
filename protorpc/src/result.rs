@@ -147,6 +147,10 @@ impl RpcError {
         Self::Io(IoError::new(ErrorKind::TimedOut, message).into())
     }
 
+    pub fn internal(message: &str) -> Self {
+        Self::RawMessage(message.to_string())
+    }
+
     pub fn to_string(&self) -> String {
         serde_json::to_string(self).unwrap()
     }
