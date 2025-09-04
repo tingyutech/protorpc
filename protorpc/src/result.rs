@@ -77,7 +77,6 @@ impl Into<IoError> for RpcIoError {
                 "HostUnreachable" => ErrorKind::HostUnreachable,
                 "Interrupted" => ErrorKind::Interrupted,
                 "InvalidData" => ErrorKind::InvalidData,
-                "InvalidFilename" => ErrorKind::InvalidFilename,
                 "InvalidInput" => ErrorKind::InvalidInput,
                 "IsADirectory" => ErrorKind::IsADirectory,
                 "network down" => ErrorKind::NetworkDown,
