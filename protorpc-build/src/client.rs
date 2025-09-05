@@ -28,7 +28,7 @@ pub fn make_client(service: &Service) -> TokenStream {
         // The response is different from the request. If the response is a stream, 
         // the returned type is implemented externally.
         let response = if method.server_streaming {
-            quote! { protorpc::response::Response<protorpc::Stream<#response_ty>> }
+            quote! { protorpc::response::Response<protorpc::Stream<Result<#response_ty, protorpc::result::RpcError>>> }
         } else {
             quote! { protorpc::response::Response<#response_ty> }
         };
@@ -39,7 +39,7 @@ pub fn make_client(service: &Service) -> TokenStream {
             let req = if method.client_streaming {
                 quote! { request.payload }
             } else {
-                quote! { protorpc::tokio_stream::once(request.payload) }
+                quote! { protorpc::tokio_stream::once(Ok(request.payload)) }
             };
 
             let res = if !method.server_streaming {
@@ -47,7 +47,7 @@ pub fn make_client(service: &Service) -> TokenStream {
                     payload
                     .next()
                     .await
-                    .ok_or_else(|| protorpc::Error::InvalidStream)?
+                    .ok_or_else(|| protorpc::result::RpcError::invalid_stream())??
                 }
             } else {
                 quote! { payload }
@@ -72,7 +72,12 @@ pub fn make_client(service: &Service) -> TokenStream {
 
         let func = format_ident!("{}", method.name);
         let generics = if method.client_streaming {
-            quote! { <S: protorpc::futures_core::Stream<Item = #request_ty> + std::marker::Send + Unpin + 'static> }
+            quote! {
+                <S: protorpc::futures_core::Stream<Item = Result<#request_ty, protorpc::result::RpcError>>
+                    + std::marker::Send
+                    + Unpin
+                    + 'static>
+            }
         } else {
             quote! {}
         };
@@ -81,7 +86,7 @@ pub fn make_client(service: &Service) -> TokenStream {
             pub async fn #func #generics(
                 &self,
                 request: #request
-            ) -> std::result::Result<#response, protorpc::Error> {
+            ) -> std::result::Result<#response, protorpc::result::RpcError> {
                 #func_body
             }
         }

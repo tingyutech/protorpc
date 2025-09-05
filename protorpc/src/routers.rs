@@ -60,7 +60,9 @@ use tokio::sync::{
     mpsc::{UnboundedSender, unbounded_channel},
 };
 
-use crate::{OrderNumber, RpcServiceBuilder, proto, task::spawn, transport::IOStream};
+use crate::{
+    OrderNumber, RpcServiceBuilder, proto, result::IoResult, task::spawn, transport::IOStream,
+};
 
 // Transport layer sequence number cursor
 static TRASNPORT_NUMBER: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
@@ -78,7 +80,7 @@ pub struct Routes {
     transport_senders: Arc<RwLock<HashMap<u32, UnboundedSender<proto::Frame>>>>,
     // Frames that need to be sent to a specific service implementation can be
     // delivered through this channel
-    service_senders: Arc<RwLock<HashMap<String, UnboundedSender<proto::Frame>>>>,
+    service_senders: Arc<RwLock<HashMap<String, UnboundedSender<IoResult<proto::Frame>>>>>,
     // Associate the transport layer sequence number with the message transaction number
     //
     // The response to a request received by a certain transport layer must also
@@ -238,33 +240,44 @@ impl Routes {
             loop {
                 tokio::select! {
                     Some(frame) = readable_stream.recv() => {
-                        #[cfg(feature = "log")]
-                        log::debug!("transport received a frame, number = {}, frame = {:?}", sequence, frame);
+                        match frame {
+                            Ok(frame) => {
+                                #[cfg(feature = "log")]
+                                log::debug!("transport received a frame, number = {}, frame = {:?}", sequence, frame);
 
-                        // Received a request header from the remote, need
-                        // to record which transport layer sent this request
-                        //
-                        // Here, associate the current request's transaction
-                        // number with the current transport layer and record
-                        // it in the lru
-                        if let Some(proto::frame::Payload::RequestHeader(_)) = frame.payload {
-                            lru.lock().await.push(frame.order_number(), sequence);
-                        }
-
-                        let mut closed_service = None;
-
-                        {
-                            if let Some(sender) = service_senders.read().await.get(&frame.service) {
-                                if !sender.is_closed() {
-                                    let _ = sender.send(frame);
+                                // Received a request header from the remote, need
+                                // to record which transport layer sent this request
+                                //
+                                // Here, associate the current request's transaction
+                                // number with the current transport layer and record
+                                // it in the lru
+                                if let Some(proto::frame::Payload::RequestHeader(_)) = frame.payload {
+                                    lru.lock().await.push(frame.order_number(), sequence);
                                 }
-                            } else {
-                                closed_service = Some(frame.service);
-                            }
-                        }
 
-                        if let Some(service) = closed_service {
-                            let _ = service_senders.write().await.remove(&service);
+                                let mut closed_service = None;
+
+                                {
+                                    if let Some(sender) = service_senders.read().await.get(&frame.service) {
+                                        if !sender.is_closed() {
+                                            let _ = sender.send(Ok(frame));
+                                        }
+                                    } else {
+                                        closed_service = Some(frame.service);
+                                    }
+                                }
+
+                                if let Some(service) = closed_service {
+                                    let _ = service_senders.write().await.remove(&service);
+                                }
+                            }
+                            Err(e) => {
+                                for (_, tx) in service_senders.write().await.drain() {
+                                    let _ = tx.send(Err(std::io::Error::new(e.kind(), e.to_string())));
+                                }
+
+                                break;
+                            }
                         }
                     }
                     _ = drop_notify_receiver_.recv() => {

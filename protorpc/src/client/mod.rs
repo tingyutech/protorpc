@@ -21,7 +21,11 @@ use tokio::time::timeout;
 #[cfg(target_family = "wasm")]
 use wasmtimer::tokio::timeout;
 
-use crate::{Error, OrderNumber, Stream, proto, task::spawn};
+use crate::{
+    OrderNumber, Stream, proto,
+    result::{IoResult, RpcError},
+    task::spawn,
+};
 
 /// Request handler trait
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
@@ -33,11 +37,11 @@ pub trait RequestHandler {
     async fn request<T, Q, S>(
         &self,
         base_request: BaseRequest<'_, T>,
-    ) -> Result<(Stream<S>, HashMap<String, String>), Error>
+    ) -> Result<(Stream<Result<S, RpcError>>, HashMap<String, String>), RpcError>
     where
         Q: Message,
         S: Message + Unpin + Default + 'static,
-        T: futures_core::Stream<Item = Q> + Unpin + Send + 'static;
+        T: futures_core::Stream<Item = Result<Q, RpcError>> + Unpin + Send + 'static;
 }
 
 /// Basic request information
@@ -66,13 +70,13 @@ impl<'a, T> BaseRequest<'a, T> {
     async fn request<Q, S>(
         mut self,
         writable_stream: UnboundedSender<proto::Frame>,
-        mut readable_stream: UnboundedReceiver<proto::Frame>,
+        mut readable_stream: UnboundedReceiver<IoResult<proto::Frame>>,
         order_number: OrderNumber,
-    ) -> Result<(Stream<S>, HashMap<String, String>), Error>
+    ) -> Result<(Stream<Result<S, RpcError>>, HashMap<String, String>), RpcError>
     where
         Q: Message,
         S: Message + Unpin + Default + 'static,
-        T: futures_core::Stream<Item = Q> + Unpin + Send + 'static,
+        T: futures_core::Stream<Item = Result<Q, RpcError>> + Unpin + Send + 'static,
     {
         #[cfg(feature = "log")]
         log::debug!(
@@ -87,7 +91,6 @@ impl<'a, T> BaseRequest<'a, T> {
             service: self.service.to_string(),
             method: self.method.to_string(),
             payload: None,
-            flags: 0,
             ..Default::default()
         };
 
@@ -98,7 +101,7 @@ impl<'a, T> BaseRequest<'a, T> {
 
         // Channel for delivering the response header.
         let (response_header_sender, response_header_receiver) =
-            oneshot::channel::<Result<HashMap<String, String>, Error>>();
+            oneshot::channel::<Result<HashMap<String, String>, RpcError>>();
 
         #[cfg(feature = "log")]
         log::debug!(
@@ -116,7 +119,7 @@ impl<'a, T> BaseRequest<'a, T> {
 
             writable_stream
                 .send(frame.clone())
-                .map_err(|_| Error::Terminated)?;
+                .map_err(|_| RpcError::terminated())?;
 
             #[cfg(feature = "log")]
             log::debug!(
@@ -131,58 +134,79 @@ impl<'a, T> BaseRequest<'a, T> {
 
             spawn(async move {
                 while let Some(frame) = readable_stream.recv().await {
-                    if frame.order_number() != order_number {
-                        continue;
-                    }
+                    match frame {
+                        Ok(frame) => {
+                            if frame.order_number() != order_number {
+                                continue;
+                            }
 
-                    #[cfg(feature = "log")]
-                    log::debug!("client core received a response frame, frame = {:?}", frame);
+                            #[cfg(feature = "log")]
+                            log::debug!(
+                                "client core received a response frame, frame = {:?}",
+                                frame
+                            );
 
-                    // The stream has ended, terminate the process. If the first packet is the end
-                    // of the stream, the stream is invalid.
-                    if (frame.flags & proto::FrameFlags::EndOfStream as u32) != 0 {
-                        if let Some(tx) = response_header_sender.take() {
-                            let _ = tx.send(Err(Error::InvalidStream));
-                        }
+                            if let Some(payload) = frame.payload {
+                                match payload {
+                                    proto::frame::Payload::Response(response) => {
+                                        // Received a response before receiving the response header,
+                                        // this is
+                                        // an invalid stream.
+                                        if let Some(tx) = response_header_sender.take() {
+                                            let _ = tx.send(Err(RpcError::invalid_stream().into()));
 
-                        break;
-                    }
+                                            break;
+                                        }
 
-                    if let Some(payload) = frame.payload {
-                        match payload {
-                            proto::frame::Payload::Response(response) => {
-                                // Received a response before receiving the response header, this is
-                                // an invalid stream.
-                                if let Some(tx) = response_header_sender.take() {
-                                    let _ = tx.send(Err(Error::InvalidStream));
+                                        // Any error here will cause the current stream to be
+                                        // terminated
+                                        // directly.
+                                        if let Ok(payload) = S::decode(response.payload.as_ref()) {
+                                            if response_stream_sender.send(Ok(payload)).is_err() {
+                                                break;
+                                            }
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    proto::frame::Payload::ResponseHeader(header) => {
+                                        let _ = response_header_sender.take().map(|it| {
+                                            it.send(if header.success {
+                                                Ok(header.metadata)
+                                            } else {
+                                                Err(header
+                                                    .error
+                                                    .map(|e| RpcError::from(e))
+                                                    .unwrap_or_else(|| RpcError::unknown().into()))
+                                            })
+                                        });
+                                    }
+                                    proto::frame::Payload::EndOfStream(frame) => {
+                                        if let Some(tx) = response_header_sender.take() {
+                                            let _ = tx.send(Err(RpcError::invalid_stream().into()));
+                                        } else {
+                                            if let Some(e) = frame.error {
+                                                let _ = response_stream_sender
+                                                    .send(Err(RpcError::from(e)));
+                                            }
+                                        }
 
-                                    break;
-                                }
-
-                                // Any error here will cause the current stream to be terminated
-                                // directly.
-                                if let Ok(payload) = S::decode(response.payload.as_ref()) {
-                                    if response_stream_sender.send(payload).is_err() {
                                         break;
                                     }
-                                } else {
-                                    break;
+                                    _ => (),
                                 }
                             }
-                            proto::frame::Payload::ResponseHeader(header) => {
-                                let _ = response_header_sender.take().map(|it| {
-                                    it.send(if header.success {
-                                        Ok(header.metadata)
-                                    } else {
-                                        Err(Error::ErrorResponse(
-                                            header
-                                                .error
-                                                .unwrap_or_else(|| "Unknown error".to_string()),
-                                        ))
-                                    })
-                                });
+                        }
+                        Err(e) => {
+                            let err = RpcError::from(e);
+
+                            if let Some(tx) = response_header_sender.take() {
+                                let _ = tx.send(Err(err));
+                            } else {
+                                let _ = response_stream_sender.send(Err(err));
                             }
-                            _ => (),
+
+                            break;
                         }
                     }
                 }
@@ -194,6 +218,7 @@ impl<'a, T> BaseRequest<'a, T> {
 
             spawn(async move {
                 let mut serial_number = 0;
+                let mut result = None;
 
                 while let Some(payload) = self.request.next().await {
                     #[cfg(feature = "log")]
@@ -202,6 +227,15 @@ impl<'a, T> BaseRequest<'a, T> {
                         frame.service,
                         order_number
                     );
+
+                    let payload = match payload {
+                        Ok(it) => it,
+                        Err(e) => {
+                            result = Some(e);
+
+                            break;
+                        }
+                    };
 
                     frame.payload = Some(proto::frame::Payload::Request(proto::Request {
                         serial_number,
@@ -226,9 +260,17 @@ impl<'a, T> BaseRequest<'a, T> {
 
                 // After the stream is closed, an `EndOfStream` packet needs to be sent.
                 {
-                    frame.payload = None;
-                    frame.flags =
-                        proto::FrameFlags::EndOfStream as u32 | proto::FrameFlags::Empty as u32;
+                    frame.payload = Some(proto::frame::Payload::EndOfStream(
+                        result
+                            .map(|it| proto::EndOfStream {
+                                success: false,
+                                error: Some(RpcError::from(it).to_string()),
+                            })
+                            .unwrap_or_else(|| proto::EndOfStream {
+                                success: true,
+                                error: None,
+                            }),
+                    ));
 
                     let _ = output_frame_sender.send(frame.clone());
 
@@ -245,8 +287,13 @@ impl<'a, T> BaseRequest<'a, T> {
         // try it the result
         let metadata = timeout(self.timeout, response_header_receiver)
             .await
-            .map_err(|_| Error::Timeout)?
-            .map_err(|_| Error::Shutdown)??;
+            .map_err(|_| {
+                RpcError::timeout(&format!(
+                    "service: {}, method: {}",
+                    self.service, self.method
+                ))
+            })?
+            .map_err(|_| RpcError::terminated())??;
 
         Ok((
             Stream::from(UnboundedReceiverStream::from(response_stream_receiver)),

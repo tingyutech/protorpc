@@ -96,6 +96,7 @@
 
 pub mod request;
 pub mod response;
+pub mod result;
 pub mod routers;
 pub mod transport;
 
@@ -108,9 +109,8 @@ pub mod server;
 /// see: <https://docs.rs/async-trait/latest/async_trait>
 pub use async_trait::async_trait;
 pub use futures_core;
+pub use serde;
 pub use tokio_stream;
-
-use thiserror::Error;
 
 /// Include generated proto server and client items.
 ///
@@ -186,32 +186,6 @@ impl proto::Frame {
         self.number = value.number;
         self.id = value.id;
     }
-}
-
-/// Errors that occur during requests
-#[derive(Debug, Error)]
-pub enum Error {
-    /// Transport layer has been terminated
-    #[error("transport terminated")]
-    Terminated,
-    /// Request timeout
-    #[error("request timeout")]
-    Timeout,
-    /// Core service has been shutdown
-    #[error("core service shutdown")]
-    Shutdown,
-    /// Invalid response
-    #[error("invalid response: {0}")]
-    InvalidResponse(#[from] prost::DecodeError),
-    /// Invalid request stream/response stream
-    #[error("invalid response stream")]
-    InvalidStream,
-    /// Server error while processing request
-    #[error("error response: {0}")]
-    ErrorResponse(String),
-    /// Transport error
-    #[error("transport response: {0}")]
-    Transport(String),
 }
 
 /// A unidirectional stream
