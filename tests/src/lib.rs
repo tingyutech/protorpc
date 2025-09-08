@@ -154,6 +154,7 @@ impl Transport for Socket {
 mod tests {
     use std::collections::HashMap;
 
+    use log::Level;
     use protorpc::routers::Routes;
     use tokio::net::TcpListener;
 
@@ -161,6 +162,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_integration() -> anyhow::Result<()> {
+        simple_logger::init_with_level(Level::Debug).unwrap();
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 

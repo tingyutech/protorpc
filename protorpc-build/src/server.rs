@@ -92,7 +92,7 @@ pub fn make_server(service: &Service) -> TokenStream {
 
             async fn handle(
                 &self,
-                request: protorpc::server::BaseRequest<protorpc::Stream<Result<Vec<u8>, protorpc::result::RpcError>>>,
+                request: protorpc::server::Session<protorpc::Stream<Result<Vec<u8>, protorpc::result::RpcError>>>,
             ) -> Result<
                 protorpc::response::Response<protorpc::Stream<Result<Vec<u8>, protorpc::result::RpcError>>>,
                 protorpc::result::RpcError
@@ -110,7 +110,7 @@ pub fn make_server(service: &Service) -> TokenStream {
             type Context = T;
             type Output = ();
 
-            fn build(ctx: Self::Context, stream: protorpc::transport::IOStream) {
+            fn build(ctx: Self::Context, stream: protorpc::routers::MessageStream) {
                 protorpc::server::startup_server(Self(ctx), stream)
             }
         }

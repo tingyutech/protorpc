@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-protorpc = { workspace = true, features = [] }
+protorpc = { workspace = true, features = ["log"] }
 anyhow = "1.0.98"
 prost = "0.14.1"
+simple_logger = "5"
+log = "0.4"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0.219", features = ["derive"] }
 

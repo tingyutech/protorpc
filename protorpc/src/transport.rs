@@ -74,7 +74,11 @@ where
                                     }
                                 }
                             }
+                            #[allow(unused_variables)]
                             Err(e) => {
+                                #[cfg(feature = "log")]
+                                log::error!("transport read error: {:?}", e);
+
                                 let _ = input_sender.send(Err(e));
 
                                 break 'a;
@@ -110,6 +114,9 @@ where
                     }
                 }
             }
+
+            #[cfg(feature = "log")]
+            log::info!("transport closed");
         });
 
         Self { sender, receiver }

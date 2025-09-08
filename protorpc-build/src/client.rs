@@ -95,32 +95,13 @@ pub fn make_client(service: &Service) -> TokenStream {
     let service_name = format_ident!("{}Client", service.name);
 
     quote! {
-        pub struct #service_name<T>(T);
+        pub struct #service_name<T>(protorpc::client::RequestHandler<T>);
 
-        impl<T: protorpc::client::RequestHandler> #service_name<T> {
+        impl<T: protorpc::transport::Transport> #service_name<T> {
             #(#methods)*
-        }
 
-        impl #service_name<protorpc::client::multiplex::Multiplex> {
-            pub fn with_stream(stream: protorpc::transport::IOStream) -> Self {
-                Self(protorpc::client::multiplex::Multiplex::new(stream))
-            }
-        }
-
-        impl<T: protorpc::transport::Transport> #service_name<protorpc::client::exclusive::Exclusive<T>> {
             pub fn with_transport(transport: T) -> Self {
-                Self(protorpc::client::exclusive::Exclusive::new(transport))
-            }
-        }
-
-        impl protorpc::RpcServiceBuilder for #service_name<protorpc::client::multiplex::Multiplex> {
-            const NAME: &'static str = #service_attr;
-
-            type Context = ();
-            type Output = Self;
-
-            fn build(_: Self::Context, transport: protorpc::transport::IOStream) -> Self {
-                Self::with_stream(transport)
+                Self(protorpc::client::RequestHandler::new(transport))
             }
         }
     }
