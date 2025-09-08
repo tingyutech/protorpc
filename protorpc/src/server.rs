@@ -170,43 +170,77 @@ pub trait ServerService {
     ) -> Result<Response<Stream<Result<Vec<u8>, RpcError>>>, RpcError>;
 }
 
-pub fn startup_server<T>(service: T, stream: MessageStream)
+pub async fn startup_server<T>(service: T, stream: MessageStream)
 where
     T: ServerService + Sync + Send + 'static,
 {
     let (writable_stream, mut readable_stream) = stream.split();
     let service = Arc::new(service);
 
-    spawn(async move {
-        let mut sessions_manager = SessionsManager::default();
+    let mut sessions_manager = SessionsManager::default();
 
-        while let Some(payload) = readable_stream.recv().await {
-            if let Some(session) = sessions_manager.accept(payload) {
-                let service = service.clone();
-                let writable_stream_ = writable_stream.clone();
+    while let Some(payload) = readable_stream.recv().await {
+        if let Some(session) = sessions_manager.accept(payload) {
+            let service = service.clone();
+            let writable_stream_ = writable_stream.clone();
 
-                spawn(async move {
-                    let transport = session.transport;
+            spawn(async move {
+                let transport = session.transport;
 
-                    let mut frame = proto::Frame {
-                        service: T::NAME.to_string(),
-                        method: session.method.clone(),
-                        payload: None,
-                        ..Default::default()
-                    };
+                let mut frame = proto::Frame {
+                    service: T::NAME.to_string(),
+                    method: session.method.clone(),
+                    payload: None,
+                    ..Default::default()
+                };
 
-                    frame.set_order_number(session.order_number);
+                frame.set_order_number(session.order_number);
 
-                    match service.handle(session).await {
-                        Ok(mut response) => {
+                match service.handle(session).await {
+                    Ok(mut response) => {
+                        {
+                            frame.payload = Some(proto::frame::Payload::ResponseHeader(
+                                proto::ResponseHeader {
+                                    success: true,
+                                    error: None,
+                                    metadata: response.metadata,
+                                },
+                            ));
+
+                            if writable_stream_
+                                .send(NamedPayload {
+                                    payload: frame.clone(),
+                                    transport,
+                                })
+                                .await
+                                .is_err()
                             {
-                                frame.payload = Some(proto::frame::Payload::ResponseHeader(
-                                    proto::ResponseHeader {
-                                        success: true,
-                                        error: None,
-                                        metadata: response.metadata,
-                                    },
-                                ));
+                                return;
+                            }
+                        }
+
+                        let mut result = None;
+
+                        {
+                            let mut serial_number = 0;
+
+                            while let Some(payload) = response.payload.next().await {
+                                let payload = match payload {
+                                    Ok(it) => it,
+                                    Err(e) => {
+                                        result = Some(e);
+
+                                        break;
+                                    }
+                                };
+
+                                frame.payload =
+                                    Some(proto::frame::Payload::Response(proto::Response {
+                                        serial_number,
+                                        payload,
+                                    }));
+
+                                serial_number += 1;
 
                                 if writable_stream_
                                     .send(NamedPayload {
@@ -216,87 +250,51 @@ where
                                     .await
                                     .is_err()
                                 {
-                                    return;
+                                    break;
                                 }
-                            }
-
-                            let mut result = None;
-
-                            {
-                                let mut serial_number = 0;
-
-                                while let Some(payload) = response.payload.next().await {
-                                    let payload = match payload {
-                                        Ok(it) => it,
-                                        Err(e) => {
-                                            result = Some(e);
-
-                                            break;
-                                        }
-                                    };
-
-                                    frame.payload =
-                                        Some(proto::frame::Payload::Response(proto::Response {
-                                            serial_number,
-                                            payload,
-                                        }));
-
-                                    serial_number += 1;
-
-                                    if writable_stream_
-                                        .send(NamedPayload {
-                                            payload: frame.clone(),
-                                            transport,
-                                        })
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                            }
-
-                            {
-                                frame.payload = Some(proto::frame::Payload::EndOfStream(
-                                    result
-                                        .map(|it| proto::EndOfStream {
-                                            success: false,
-                                            error: Some(it.to_string()),
-                                        })
-                                        .unwrap_or_else(|| proto::EndOfStream {
-                                            success: true,
-                                            error: None,
-                                        }),
-                                ));
-
-                                let _ = writable_stream_
-                                    .send(NamedPayload {
-                                        payload: frame,
-                                        transport,
-                                    })
-                                    .await;
                             }
                         }
-                        Err(e) => {
-                            frame.payload = Some(proto::frame::Payload::ResponseHeader(
-                                proto::ResponseHeader {
-                                    success: false,
-                                    error: Some(e.to_string()),
-                                    metadata: HashMap::default(),
-                                },
+
+                        {
+                            frame.payload = Some(proto::frame::Payload::EndOfStream(
+                                result
+                                    .map(|it| proto::EndOfStream {
+                                        success: false,
+                                        error: Some(it.to_string()),
+                                    })
+                                    .unwrap_or_else(|| proto::EndOfStream {
+                                        success: true,
+                                        error: None,
+                                    }),
                             ));
 
-                            let _ = writable_stream_.send(NamedPayload {
-                                payload: frame,
-                                transport,
-                            }).await;
+                            let _ = writable_stream_
+                                .send(NamedPayload {
+                                    payload: frame,
+                                    transport,
+                                })
+                                .await;
                         }
                     }
-                });
-            }
-        }
+                    Err(e) => {
+                        frame.payload = Some(proto::frame::Payload::ResponseHeader(
+                            proto::ResponseHeader {
+                                success: false,
+                                error: Some(e.to_string()),
+                                metadata: HashMap::default(),
+                            },
+                        ));
 
-        #[cfg(feature = "log")]
-        log::info!("service closed, service = {}", T::NAME);
-    });
+                        let _ = writable_stream_.send(NamedPayload {
+                            payload: frame,
+                            transport,
+                        }).await;
+                    }
+                }
+            });
+        }
+    }
+
+    #[cfg(feature = "log")]
+    log::info!("service closed, service = {}", T::NAME);
 }

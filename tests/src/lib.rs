@@ -152,7 +152,7 @@ impl Transport for Socket {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, sync::Arc};
 
     use log::Level;
     use protorpc::routers::Routes;
@@ -168,11 +168,12 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         tokio::spawn(async move {
-            let routes = Routes::new();
+            let routes = Arc::new(Routes::new());
 
-            routes
-                .make_service::<proto::server::EchoServer<EchoService>>(EchoService)
-                .await;
+            let routes_ = routes.clone();
+            tokio::spawn(async move {
+                routes_.start_service::<proto::server::EchoServer<EchoService>>(EchoService).await;
+            });
 
             while let Ok((sokcet, _)) = listener.accept().await {
                 routes.add_stream(sokcet.into()).await;

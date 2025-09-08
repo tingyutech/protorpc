@@ -171,8 +171,8 @@ impl Routes {
         });
     }
 
-    /// Build a service.
-    pub async fn make_service<S: RpcServiceBuilder + Send + Sync + 'static>(
+    /// Start a service.
+    pub async fn start_service<S: RpcServiceBuilder + Send + Sync + 'static>(
         &self,
         ctx: S::Context,
     ) -> S::Output {
@@ -191,7 +191,7 @@ impl Routes {
                 transport_senders: self.transport_senders.clone(),
                 receiver,
             },
-        )
+        ).await
     }
 }
 

@@ -104,14 +104,16 @@ pub fn make_server(service: &Service) -> TokenStream {
             }
         }
 
+        #[cfg_attr(target_family = "wasm", protorpc::async_trait(?Send))]
+        #[cfg_attr(not(target_family = "wasm"), protorpc::async_trait)]
         impl<T: #service_handler_name> protorpc::RpcServiceBuilder for #service_name<T> {
             const NAME: &'static str = #service_attr;
 
             type Context = T;
             type Output = ();
 
-            fn build(ctx: Self::Context, stream: protorpc::routers::MessageStream) {
-                protorpc::server::startup_server(Self(ctx), stream)
+            async fn build(ctx: Self::Context, stream: protorpc::routers::MessageStream) {
+                protorpc::server::startup_server(Self(ctx), stream).await
             }
         }
     }

@@ -271,6 +271,8 @@ pub struct NamedPayload<T> {
 ///
 /// Note, however, that if you register a client into `Routes`, the router will
 /// implement multiplexing and random selection of transport streams internally.
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 pub trait RpcServiceBuilder {
     const NAME: &'static str;
 
@@ -278,7 +280,7 @@ pub trait RpcServiceBuilder {
     type Output;
 
     #[cfg(not(doc))]
-    fn build(ctx: Self::Context, stream: MessageStream) -> Self::Output;
+    async fn build(ctx: Self::Context, stream: MessageStream) -> Self::Output;
 }
 
 pub(crate) mod task {
