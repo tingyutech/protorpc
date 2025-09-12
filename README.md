@@ -21,10 +21,10 @@ This is an RPC framework similar to tonic, but unlike tonic, it does not rely on
 ```toml
 [dependencies]
 prost = "0.14.1"
-protorpc = { git = "https://github.com/tingyutech/protorpc", branch = "0.1.0" }
+protorpc = { git = "https://github.com/tingyutech/protorpc", branch = "0.2" }
 
 [build-dependencies]
-protorpc-build = { git = "https://github.com/tingyutech/protorpc", branch = "0.1.0" }
+protorpc-build = { git = "https://github.com/tingyutech/protorpc", branch = "0.2" }
 ```
 
 For more usage examples, please refer to the `tests` directory in the project.
