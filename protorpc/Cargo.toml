@@ -8,7 +8,6 @@ async-trait = "0.1"
 bytes = "1"
 futures-core = "0.3"
 prost = "0.14"
-lru = "0.16"
 tokio-stream = "0.1"
 log = { version = "0.4", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
@@ -44,3 +43,4 @@ prost-build = { version = "0.14", features = ["cleanup-markdown"] }
 
 [features]
 log = ["dep:log"]
+default = ["log"]

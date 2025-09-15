@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use prost::Message;
@@ -6,11 +9,16 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
 use crate::{
-    OrderNumber, Stream, proto, request::Request, response::Response, result::RpcError,
-    task::spawn, transport::IOStream,
+    NamedPayload, OrderNumber, Stream, proto,
+    request::Request,
+    response::Response,
+    result::{IoResult, RpcError},
+    routers::MessageStream,
+    task::spawn,
 };
 
-pub struct BaseRequest<T> {
+pub struct Session<T> {
+    pub transport: u32,
     pub order_number: OrderNumber,
     pub service: String,
     pub method: String,
@@ -18,9 +26,9 @@ pub struct BaseRequest<T> {
     pub payload: T,
 }
 
-impl<T> std::fmt::Debug for BaseRequest<T> {
+impl<T> std::fmt::Debug for Session<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BaseRequest")
+        f.debug_struct("Session")
             .field("service", &self.service)
             .field("method", &self.method)
             .field("metadata", &self.metadata)
@@ -28,7 +36,7 @@ impl<T> std::fmt::Debug for BaseRequest<T> {
     }
 }
 
-impl BaseRequest<Stream<Result<Vec<u8>, RpcError>>> {
+impl Session<Stream<Result<Vec<u8>, RpcError>>> {
     pub async fn into_once<T: Message + Default>(mut self) -> Result<Request<T>, RpcError> {
         Ok(Request {
             metadata: self.metadata,
@@ -79,57 +87,75 @@ impl BaseRequest<Stream<Result<Vec<u8>, RpcError>>> {
 }
 
 #[derive(Default)]
-struct RequestFrameAdapter {
-    stream_senders: HashMap<OrderNumber, UnboundedSender<Result<Vec<u8>, RpcError>>>,
+struct SessionsManager {
+    transport_bound: HashMap<u32, HashSet<OrderNumber>>,
+    request_senders: HashMap<OrderNumber, UnboundedSender<Result<Vec<u8>, RpcError>>>,
 }
 
-impl RequestFrameAdapter {
+impl SessionsManager {
     fn accept(
         &mut self,
-        frame: proto::Frame,
-    ) -> Option<BaseRequest<Stream<Result<Vec<u8>, RpcError>>>> {
-        let order_number = frame.order_number();
+        NamedPayload { transport, payload }: NamedPayload<IoResult<proto::Frame>>,
+    ) -> Option<Session<Stream<Result<Vec<u8>, RpcError>>>> {
+        match payload {
+            Ok(frame) => {
+                let order_number = frame.order_number();
 
-        if let Some(payload) = frame.payload {
-            match payload {
-                proto::frame::Payload::RequestHeader(header) => {
-                    let (tx, rx) = unbounded_channel::<Result<Vec<u8>, RpcError>>();
-                    self.stream_senders.insert(order_number, tx);
+                if let Some(payload) = frame.payload {
+                    match payload {
+                        proto::frame::Payload::RequestHeader(header) => {
+                            let (tx, rx) = unbounded_channel::<Result<Vec<u8>, RpcError>>();
+                            self.request_senders.insert(order_number, tx);
 
-                    return Some(BaseRequest {
-                        payload: Stream::from(UnboundedReceiverStream::from(rx)),
-                        service: frame.service,
-                        method: frame.method,
-                        metadata: header.metadata,
-                        order_number,
-                    });
-                }
-                proto::frame::Payload::Request(request) => {
-                    if let Some(tx) = self.stream_senders.get(&order_number).as_ref() {
-                        let _ = tx.send(Ok(request.payload));
+                            self.transport_bound
+                                .entry(transport)
+                                .or_default()
+                                .insert(order_number);
+
+                            return Some(Session {
+                                payload: Stream::from(UnboundedReceiverStream::from(rx)),
+                                service: frame.service,
+                                method: frame.method,
+                                metadata: header.metadata,
+                                order_number,
+                                transport,
+                            });
+                        }
+                        proto::frame::Payload::Request(request) => {
+                            if let Some(tx) = self.request_senders.get(&order_number).as_ref() {
+                                let _ = tx.send(Ok(request.payload));
+                            }
+                        }
+                        proto::frame::Payload::EndOfStream(frame) => {
+                            if let Some(tx) = self.request_senders.remove(&order_number) {
+                                if let Some(e) = frame.error {
+                                    let _ = tx.send(Err(RpcError::from(e)));
+                                }
+                            }
+
+                            if let Some(items) = self.transport_bound.get_mut(&transport) {
+                                items.remove(&order_number);
+                            }
+                        }
+                        _ => (),
                     }
                 }
-                proto::frame::Payload::EndOfStream(frame) => {
-                    if let Some(tx) = self.stream_senders.remove(&order_number) {
-                        if let Some(e) = frame.error {
-                            let _ = tx.send(Err(RpcError::from(e)));
+            }
+            Err(e) => {
+                if let Some(items) = self.transport_bound.remove(&transport) {
+                    for order_number in items {
+                        if let Some(tx) = self.request_senders.remove(&order_number) {
+                            let _ = tx.send(Err(RpcError::from(std::io::Error::new(
+                                e.kind(),
+                                e.to_string(),
+                            ))));
                         }
                     }
                 }
-                _ => (),
             }
         }
 
         None
-    }
-
-    fn error(&mut self, err: std::io::Error) {
-        for tx in self.stream_senders.values() {
-            let _ = tx.send(Err(RpcError::from(std::io::Error::new(
-                err.kind(),
-                err.to_string(),
-            ))));
-        }
     }
 }
 
@@ -140,127 +166,135 @@ pub trait ServerService {
 
     async fn handle(
         &self,
-        request: BaseRequest<Stream<Result<Vec<u8>, RpcError>>>,
+        session: Session<Stream<Result<Vec<u8>, RpcError>>>,
     ) -> Result<Response<Stream<Result<Vec<u8>, RpcError>>>, RpcError>;
 }
 
-pub fn startup_server<T>(
-    service: T,
-    IOStream {
-        receiver: mut readable_stream,
-        sender: writable_stream,
-    }: IOStream,
-) where
+pub async fn startup_server<T>(service: T, stream: MessageStream)
+where
     T: ServerService + Sync + Send + 'static,
 {
+    let (writable_stream, mut readable_stream) = stream.split();
     let service = Arc::new(service);
-    let (frame_sender, mut frame_receiver) = unbounded_channel::<proto::Frame>();
-    spawn(async move {
-        while let Some(frame) = frame_receiver.recv().await {
-            if writable_stream.send(frame).is_err() {
-                break;
-            }
-        }
-    });
 
-    spawn(async move {
-        let mut adapter = RequestFrameAdapter::default();
+    let mut sessions_manager = SessionsManager::default();
 
-        while let Some(frame) = readable_stream.recv().await {
-            match frame {
-                Ok(frame) => {
-                    if let Some(request) = adapter.accept(frame) {
-                        let service = service.clone();
-                        let frame_sender_ = frame_sender.clone();
+    while let Some(payload) = readable_stream.recv().await {
+        if let Some(session) = sessions_manager.accept(payload) {
+            let service = service.clone();
+            let writable_stream_ = writable_stream.clone();
 
-                        spawn(async move {
-                            let mut frame = proto::Frame {
-                                service: T::NAME.to_string(),
-                                method: request.method.clone(),
-                                payload: None,
-                                ..Default::default()
-                            };
+            spawn(async move {
+                let transport = session.transport;
 
-                            frame.set_order_number(request.order_number);
+                let mut frame = proto::Frame {
+                    service: T::NAME.to_string(),
+                    method: session.method.clone(),
+                    payload: None,
+                    ..Default::default()
+                };
 
-                            match service.handle(request).await {
-                                Ok(mut response) => {
-                                    {
-                                        frame.payload =
-                                            Some(proto::frame::Payload::ResponseHeader(
-                                                proto::ResponseHeader {
-                                                    success: true,
-                                                    error: None,
-                                                    metadata: response.metadata,
-                                                },
-                                            ));
+                frame.set_order_number(session.order_number);
 
-                                        if frame_sender_.send(frame.clone()).is_err() {
-                                            return;
-                                        }
+                match service.handle(session).await {
+                    Ok(mut response) => {
+                        {
+                            frame.payload = Some(proto::frame::Payload::ResponseHeader(
+                                proto::ResponseHeader {
+                                    success: true,
+                                    error: None,
+                                    metadata: response.metadata,
+                                },
+                            ));
+
+                            if writable_stream_
+                                .send(NamedPayload {
+                                    payload: frame.clone(),
+                                    transport,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+
+                        let mut result = None;
+
+                        {
+                            let mut serial_number = 0;
+
+                            while let Some(payload) = response.payload.next().await {
+                                let payload = match payload {
+                                    Ok(it) => it,
+                                    Err(e) => {
+                                        result = Some(e);
+
+                                        break;
                                     }
+                                };
 
-                                    let mut result = None;
-                                    let mut serial_number = 0;
-                                    while let Some(payload) = response.payload.next().await {
-                                        let payload = match payload {
-                                            Ok(it) => it,
-                                            Err(e) => {
-                                                result = Some(e);
+                                frame.payload =
+                                    Some(proto::frame::Payload::Response(proto::Response {
+                                        serial_number,
+                                        payload,
+                                    }));
 
-                                                break;
-                                            }
-                                        };
+                                serial_number += 1;
 
-                                        frame.payload = Some(proto::frame::Payload::Response(
-                                            proto::Response {
-                                                serial_number,
-                                                payload,
-                                            },
-                                        ));
-
-                                        serial_number += 1;
-
-                                        if frame_sender_.send(frame.clone()).is_err() {
-                                            break;
-                                        }
-                                    }
-
-                                    frame.payload = Some(proto::frame::Payload::EndOfStream(
-                                        result
-                                            .map(|it| proto::EndOfStream {
-                                                success: false,
-                                                error: Some(it.to_string()),
-                                            })
-                                            .unwrap_or_else(|| proto::EndOfStream {
-                                                success: true,
-                                                error: None,
-                                            }),
-                                    ));
-
-                                    let _ = frame_sender_.send(frame);
-                                }
-                                Err(e) => {
-                                    frame.payload = Some(proto::frame::Payload::ResponseHeader(
-                                        proto::ResponseHeader {
-                                            success: false,
-                                            error: Some(e.to_string()),
-                                            metadata: HashMap::default(),
-                                        },
-                                    ));
-
-                                    let _ = frame_sender_.send(frame);
+                                if writable_stream_
+                                    .send(NamedPayload {
+                                        payload: frame.clone(),
+                                        transport,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
                                 }
                             }
-                        });
+                        }
+
+                        {
+                            frame.payload = Some(proto::frame::Payload::EndOfStream(
+                                result
+                                    .map(|it| proto::EndOfStream {
+                                        success: false,
+                                        error: Some(it.to_string()),
+                                    })
+                                    .unwrap_or_else(|| proto::EndOfStream {
+                                        success: true,
+                                        error: None,
+                                    }),
+                            ));
+
+                            let _ = writable_stream_
+                                .send(NamedPayload {
+                                    payload: frame,
+                                    transport,
+                                })
+                                .await;
+                        }
+                    }
+                    Err(e) => {
+                        frame.payload = Some(proto::frame::Payload::ResponseHeader(
+                            proto::ResponseHeader {
+                                success: false,
+                                error: Some(e.to_string()),
+                                metadata: HashMap::default(),
+                            },
+                        ));
+
+                        let _ = writable_stream_.send(NamedPayload {
+                            payload: frame,
+                            transport,
+                        }).await;
                     }
                 }
-                Err(e) => {
-                    adapter.error(e);
-
-                    break;
-                }
-            }
+            });
         }
-    });
+    }
+
+    #[cfg(feature = "log")]
+    log::info!("service closed, service = {}", T::NAME);
 }

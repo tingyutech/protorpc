@@ -1,15 +1,8 @@
-pub mod exclusive;
-pub mod multiplex;
-
 use std::collections::HashMap;
 
-use async_trait::async_trait;
 use prost::Message;
 use tokio::{
-    sync::{
-        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-        oneshot,
-    },
+    sync::{mpsc::unbounded_channel, oneshot},
     time::Duration,
 };
 
@@ -18,31 +11,16 @@ use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 #[cfg(not(target_family = "wasm"))]
 use tokio::time::timeout;
 
+use uuid::Uuid;
 #[cfg(target_family = "wasm")]
 use wasmtimer::tokio::timeout;
 
 use crate::{
     OrderNumber, Stream, proto,
-    result::{IoResult, RpcError},
+    result::RpcError,
     task::spawn,
+    transport::{IOStream, Transport},
 };
-
-/// Request handler trait
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-pub trait RequestHandler {
-    /// Handle request
-    ///
-    /// This method is used internally and should not concern external users.
-    async fn request<T, Q, S>(
-        &self,
-        base_request: BaseRequest<'_, T>,
-    ) -> Result<(Stream<Result<S, RpcError>>, HashMap<String, String>), RpcError>
-    where
-        Q: Message,
-        S: Message + Unpin + Default + 'static,
-        T: futures_core::Stream<Item = Result<Q, RpcError>> + Unpin + Send + 'static;
-}
 
 /// Basic request information
 ///
@@ -66,30 +44,52 @@ impl<'a, T> std::fmt::Debug for BaseRequest<'a, T> {
     }
 }
 
-impl<'a, T> BaseRequest<'a, T> {
-    async fn request<Q, S>(
-        mut self,
-        writable_stream: UnboundedSender<proto::Frame>,
-        mut readable_stream: UnboundedReceiver<IoResult<proto::Frame>>,
-        order_number: OrderNumber,
+pub struct RequestHandler<F>(F);
+
+impl<F> RequestHandler<F> {
+    pub fn new(transport: F) -> Self {
+        Self(transport)
+    }
+}
+
+impl<F> RequestHandler<F>
+where
+    F: Transport,
+{
+    pub async fn request<T, Q, S>(
+        &self,
+        mut req: BaseRequest<'static, T>,
     ) -> Result<(Stream<Result<S, RpcError>>, HashMap<String, String>), RpcError>
     where
         Q: Message,
         S: Message + Unpin + Default + 'static,
         T: futures_core::Stream<Item = Result<Q, RpcError>> + Unpin + Send + 'static,
     {
+        // Let the external transport layer create an independent stream for the
+        // current request.
+        let order_number = Uuid::new_v4().as_u128();
+        let IOStream {
+            receiver: mut readable_stream,
+            sender: writable_stream,
+        } = self
+            .0
+            .create_stream(order_number)
+            .await
+            .map_err(|e| RpcError::from(e))?;
+
         #[cfg(feature = "log")]
         log::debug!(
             "client core send a request, service = {}, method = {}",
-            self.service,
-            self.method
+            req.service,
+            req.method
         );
 
         // The overall process actually simulates HTTP, but with some differences.
 
+        let order_number: OrderNumber = order_number.into();
         let mut frame = proto::Frame {
-            service: self.service.to_string(),
-            method: self.method.to_string(),
+            service: req.service.to_string(),
+            method: req.method.to_string(),
             payload: None,
             ..Default::default()
         };
@@ -106,15 +106,15 @@ impl<'a, T> BaseRequest<'a, T> {
         #[cfg(feature = "log")]
         log::debug!(
             "client core registered a response frame handler, service = {}, method = {}, order id = {:?}",
-            self.service,
-            self.method,
+            req.service,
+            req.method,
             order_number
         );
 
         // First send the request header, similar to an HTTP request header.
         {
             frame.payload = Some(proto::frame::Payload::RequestHeader(proto::RequestHeader {
-                metadata: self.metadata,
+                metadata: req.metadata,
             }));
 
             writable_stream
@@ -124,8 +124,8 @@ impl<'a, T> BaseRequest<'a, T> {
             #[cfg(feature = "log")]
             log::debug!(
                 "client core sent a request header, service = {}, method = {}",
-                self.service,
-                self.method
+                req.service,
+                req.method
             );
         }
 
@@ -134,24 +134,23 @@ impl<'a, T> BaseRequest<'a, T> {
 
             spawn(async move {
                 while let Some(frame) = readable_stream.recv().await {
+                    #[cfg(feature = "log")]
+                    log::debug!(
+                        "client core received a response frame, frame = {:?}",
+                        frame
+                    );
+
                     match frame {
                         Ok(frame) => {
                             if frame.order_number() != order_number {
                                 continue;
                             }
 
-                            #[cfg(feature = "log")]
-                            log::debug!(
-                                "client core received a response frame, frame = {:?}",
-                                frame
-                            );
-
                             if let Some(payload) = frame.payload {
                                 match payload {
                                     proto::frame::Payload::Response(response) => {
                                         // Received a response before receiving the response header,
-                                        // this is
-                                        // an invalid stream.
+                                        // this is an invalid stream.
                                         if let Some(tx) = response_header_sender.take() {
                                             let _ = tx.send(Err(RpcError::invalid_stream().into()));
 
@@ -159,8 +158,7 @@ impl<'a, T> BaseRequest<'a, T> {
                                         }
 
                                         // Any error here will cause the current stream to be
-                                        // terminated
-                                        // directly.
+                                        // terminated directly.
                                         if let Ok(payload) = S::decode(response.payload.as_ref()) {
                                             if response_stream_sender.send(Ok(payload)).is_err() {
                                                 break;
@@ -205,11 +203,17 @@ impl<'a, T> BaseRequest<'a, T> {
                             } else {
                                 let _ = response_stream_sender.send(Err(err));
                             }
-
-                            break;
                         }
                     }
                 }
+
+                #[cfg(feature = "log")]
+                log::info!(
+                    "reponses stream closed, service = {}, method = {}, order id = {:?}",
+                    req.service,
+                    req.method,
+                    order_number
+                );
             });
         }
 
@@ -220,7 +224,7 @@ impl<'a, T> BaseRequest<'a, T> {
                 let mut serial_number = 0;
                 let mut result = None;
 
-                while let Some(payload) = self.request.next().await {
+                while let Some(payload) = req.request.next().await {
                     #[cfg(feature = "log")]
                     log::debug!(
                         "client core send a request payload, service = {}, order id = {:?}",
@@ -258,6 +262,14 @@ impl<'a, T> BaseRequest<'a, T> {
                     }
                 }
 
+                #[cfg(feature = "log")]
+                log::info!(
+                    "requests stream closed, service = {}, method = {}, order id = {:?}",
+                    frame.service,
+                    req.method,
+                    order_number
+                );
+
                 // After the stream is closed, an `EndOfStream` packet needs to be sent.
                 {
                     frame.payload = Some(proto::frame::Payload::EndOfStream(
@@ -273,25 +285,15 @@ impl<'a, T> BaseRequest<'a, T> {
                     ));
 
                     let _ = output_frame_sender.send(frame.clone());
-
-                    #[cfg(feature = "log")]
-                    log::debug!(
-                        "client core sent a request end of stream frame, service = {}, order id = {:?}",
-                        frame.service,
-                        order_number
-                    );
                 }
             });
         }
 
         // try it the result
-        let metadata = timeout(self.timeout, response_header_receiver)
+        let metadata = timeout(req.timeout, response_header_receiver)
             .await
             .map_err(|_| {
-                RpcError::timeout(&format!(
-                    "service: {}, method: {}",
-                    self.service, self.method
-                ))
+                RpcError::timeout(&format!("service: {}, method: {}", req.service, req.method))
             })?
             .map_err(|_| RpcError::terminated())??;
 

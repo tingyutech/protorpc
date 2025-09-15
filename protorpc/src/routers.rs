@@ -44,11 +44,8 @@
 //! }
 //! ```
 
-use lru::LruCache;
-
 use std::{
     collections::HashMap,
-    num::NonZeroUsize,
     sync::{
         Arc, LazyLock,
         atomic::{AtomicU32, Ordering},
@@ -56,12 +53,12 @@ use std::{
 };
 
 use tokio::sync::{
-    Mutex, RwLock,
-    mpsc::{UnboundedSender, unbounded_channel},
+    RwLock,
+    mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
 
 use crate::{
-    OrderNumber, RpcServiceBuilder, proto, result::IoResult, task::spawn, transport::IOStream,
+    NamedPayload, RpcServiceBuilder, proto, result::IoResult, task::spawn, transport::IOStream,
 };
 
 // Transport layer sequence number cursor
@@ -72,141 +69,24 @@ pub struct Routes {
     drop_notify_sender: tokio::sync::broadcast::Sender<()>,
     drop_notify_receiver: tokio::sync::broadcast::Receiver<()>,
 
-    // All frames that need to be sent to the peer through the transport layer
-    // are sent to this channel; this is a bus for output frames
-    output_bus_sender: UnboundedSender<proto::Frame>,
     // Frames that need to be sent to a specific transport layer can be delivered
     // through this channel
     transport_senders: Arc<RwLock<HashMap<u32, UnboundedSender<proto::Frame>>>>,
     // Frames that need to be sent to a specific service implementation can be
     // delivered through this channel
-    service_senders: Arc<RwLock<HashMap<String, UnboundedSender<IoResult<proto::Frame>>>>>,
-    // Associate the transport layer sequence number with the message transaction number
-    //
-    // The response to a request received by a certain transport layer must also
-    // be sent to this transport layer
-    lru: Arc<Mutex<LruCache<OrderNumber, u32 /* transport sequence */>>>,
+    service_senders:
+        Arc<RwLock<HashMap<String, UnboundedSender<NamedPayload<IoResult<proto::Frame>>>>>>,
 }
 
 impl Routes {
     pub fn new() -> Self {
         let (drop_notify_sender, drop_notify_receiver) = tokio::sync::broadcast::channel::<()>(10);
-        let (output_bus_sender, mut output_bus_receiver) = unbounded_channel::<proto::Frame>();
-
-        let transport_senders: Arc<RwLock<HashMap<u32, UnboundedSender<proto::Frame>>>> =
-            Default::default();
-
-        let lru = Arc::new(Mutex::new(LruCache::<OrderNumber, u32>::new(
-            NonZeroUsize::new(100).unwrap(),
-        )));
-
-        // This worker is dedicated to message routing
-        //
-        // Uniformly handle frames that need to be sent out, then look up the
-        // message routing table to forward them to the corresponding transport layer
-        {
-            let lru_ = lru.clone();
-            let transport_senders_ = transport_senders.clone();
-            let mut drop_notify_receiver_ = drop_notify_receiver.resubscribe();
-
-            spawn(async move {
-                loop {
-                    tokio::select! {
-                        Some(frame) = output_bus_receiver.recv() => {
-                            let order_number = frame.order_number();
-
-                            #[cfg(feature = "log")]
-                            log::debug!("routers bus forwarding task received a frame, frame = {:?}", frame);
-
-                            let sequence = {
-                                let mut lru = lru_.lock().await;
-
-                                if let Some(sequence) = lru.get(&order_number).copied() {
-                                    sequence
-                                } else {
-                                    if let Some(proto::frame::Payload::RequestHeader(_)) = frame.payload
-                                    {
-                                        // If this frame is a request header and
-                                        // there is no record in the lru, randomly
-                                        // select a transport layer
-                                        //
-                                        // Because this means the request header
-                                        // was sent by the client and is not recorded.
-                                        let index = {
-                                            let transport_senders = transport_senders_.read().await;
-                                            let mut keys = transport_senders.keys();
-
-                                            let offset = if keys.len() == 0 {
-                                                continue;
-                                            } else {
-                                                if keys.len() == 1 {
-                                                    0
-                                                } else {
-                                                    fastrand::usize(0..keys.len())
-                                                }
-                                            };
-
-                                            keys.nth(offset).copied().unwrap_or(0)
-                                        };
-
-                                        lru.push(order_number, index);
-
-                                        #[cfg(feature = "log")]
-                                        log::debug!(
-                                            "request has no bound transport layer, randomly assigned to = {}, service = {:?}",
-                                            index,
-                                            frame.service,
-                                        );
-
-                                        index
-                                    } else {
-                                        continue;
-                                    }
-                                }
-                            };
-
-                            let mut is_closed = false;
-
-                            {
-                                if let Some(sender) = transport_senders_.read().await.get(&sequence) {
-                                    if sender.send(frame).is_err() {
-                                        is_closed = true;
-                                    }
-                                }
-                            }
-
-                            // The transport layer is invalid, clean it up
-                            if is_closed {
-                                let _ = transport_senders_.write().await.remove(&sequence);
-
-                                #[cfg(feature = "log")]
-                                log::info!("transport layer invalid, removing transport layer = {}", sequence);
-                            }
-                        }
-                        _ = drop_notify_receiver_.recv() => {
-                            #[cfg(feature = "log")]
-                            log::info!("routers bus forwarding task exited for routers dropped");
-
-                            break;
-                        }
-                        else => {
-                            break;
-                        }
-                    }
-                }
-
-                #[cfg(feature = "log")]
-                log::info!("routers bus forwarding task closed");
-            });
-        }
 
         Self {
+            transport_senders: Default::default(),
             service_senders: Default::default(),
             drop_notify_receiver,
             drop_notify_sender,
-            transport_senders,
-            output_bus_sender,
-            lru,
         }
     }
 
@@ -220,10 +100,8 @@ impl Routes {
     ) {
         let sequence = TRASNPORT_NUMBER.fetch_add(1, Ordering::Relaxed);
 
-        let lru = self.lru.clone();
         let transport_senders = self.transport_senders.clone();
         let service_senders = self.service_senders.clone();
-        let mut drop_notify_receiver_ = self.drop_notify_receiver.resubscribe();
 
         transport_senders
             .write()
@@ -236,47 +114,27 @@ impl Routes {
             sequence
         );
 
+        let mut drop_notify_receiver_ = self.drop_notify_receiver.resubscribe();
+
         spawn(async move {
+            let mut closed_service = None;
+
             loop {
                 tokio::select! {
-                    Some(frame) = readable_stream.recv() => {
-                        match frame {
-                            Ok(frame) => {
-                                #[cfg(feature = "log")]
-                                log::debug!("transport received a frame, number = {}, frame = {:?}", sequence, frame);
+                    Some(Ok(frame)) = readable_stream.recv() => {
+                        #[cfg(feature = "log")]
+                        log::debug!("transport received a frame, number = {}, frame = {:?}", sequence, frame);
 
-                                // Received a request header from the remote, need
-                                // to record which transport layer sent this request
-                                //
-                                // Here, associate the current request's transaction
-                                // number with the current transport layer and record
-                                // it in the lru
-                                if let Some(proto::frame::Payload::RequestHeader(_)) = frame.payload {
-                                    lru.lock().await.push(frame.order_number(), sequence);
+                        {
+                            if let Some(sender) = service_senders.read().await.get(&frame.service) {
+                                if !sender.is_closed() {
+                                    let _ = sender.send(NamedPayload {
+                                        transport: sequence,
+                                        payload: Ok(frame)
+                                    });
+                                } else {
+                                    closed_service = Some(frame.service);
                                 }
-
-                                let mut closed_service = None;
-
-                                {
-                                    if let Some(sender) = service_senders.read().await.get(&frame.service) {
-                                        if !sender.is_closed() {
-                                            let _ = sender.send(Ok(frame));
-                                        }
-                                    } else {
-                                        closed_service = Some(frame.service);
-                                    }
-                                }
-
-                                if let Some(service) = closed_service {
-                                    let _ = service_senders.write().await.remove(&service);
-                                }
-                            }
-                            Err(e) => {
-                                for (_, tx) in service_senders.write().await.drain() {
-                                    let _ = tx.send(Err(std::io::Error::new(e.kind(), e.to_string())));
-                                }
-
-                                break;
                             }
                         }
                     }
@@ -290,37 +148,50 @@ impl Routes {
                         break;
                     }
                 }
+
+                if let Some(service) = closed_service.take() {
+                    let _ = service_senders.write().await.remove(&service);
+                }
             }
 
             #[cfg(feature = "log")]
             log::info!("transport closed, number = {}", sequence);
 
             let _ = transport_senders.write().await.remove(&sequence);
+
+            for item in service_senders.write().await.values() {
+                let _ = item.send(NamedPayload {
+                    transport: sequence,
+                    payload: Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionAborted,
+                        "",
+                    )),
+                });
+            }
         });
     }
 
-    /// Build a service.
-    pub async fn make_service<S: RpcServiceBuilder + Send + Sync + 'static>(
+    /// Start a service.
+    pub async fn start_service<S: RpcServiceBuilder + Send + Sync + 'static>(
         &self,
         ctx: S::Context,
     ) -> S::Output {
-        let (input_sender, input_receiver) = unbounded_channel();
-
+        let (sender, receiver) = unbounded_channel();
         self.service_senders
             .write()
             .await
-            .insert(S::NAME.to_string(), input_sender);
+            .insert(S::NAME.to_string(), sender);
 
         #[cfg(feature = "log")]
         log::info!("routers added a service, service = {}", S::NAME);
 
         S::build(
             ctx,
-            IOStream {
-                sender: self.output_bus_sender.clone(),
-                receiver: input_receiver,
+            MessageStream {
+                transport_senders: self.transport_senders.clone(),
+                receiver,
             },
-        )
+        ).await
     }
 }
 
@@ -330,5 +201,45 @@ impl Drop for Routes {
 
         #[cfg(feature = "log")]
         log::info!("routers dropped");
+    }
+}
+
+pub struct MessageStream {
+    receiver: UnboundedReceiver<NamedPayload<IoResult<proto::Frame>>>,
+    transport_senders: Arc<RwLock<HashMap<u32, UnboundedSender<proto::Frame>>>>,
+}
+
+impl MessageStream {
+    pub fn split(self) -> (MessageStreamSender, MessageStreamReceiver) {
+        (
+            MessageStreamSender(self.transport_senders),
+            MessageStreamReceiver(self.receiver),
+        )
+    }
+}
+
+#[derive(Clone)]
+pub struct MessageStreamSender(Arc<RwLock<HashMap<u32, UnboundedSender<proto::Frame>>>>);
+
+impl MessageStreamSender {
+    pub async fn send(&self, message: NamedPayload<proto::Frame>) -> IoResult<()> {
+        if let Some(sender) = self.0.read().await.get(&message.transport) {
+            if sender.send(message.payload).is_ok() {
+                return Ok(());
+            }
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "",
+        ))
+    }
+}
+
+pub struct MessageStreamReceiver(UnboundedReceiver<NamedPayload<IoResult<proto::Frame>>>);
+
+impl MessageStreamReceiver {
+    pub async fn recv(&mut self) -> Option<NamedPayload<IoResult<proto::Frame>>> {
+        self.0.recv().await
     }
 }

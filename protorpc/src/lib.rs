@@ -112,6 +112,9 @@ pub use futures_core;
 pub use serde;
 pub use tokio_stream;
 
+#[cfg(not(doc))]
+use crate::routers::MessageStream;
+
 /// Include generated proto server and client items.
 ///
 /// You must specify the gRPC package name.
@@ -225,6 +228,11 @@ impl<T: Send> futures_core::Stream for Stream<T> {
     }
 }
 
+pub struct NamedPayload<T> {
+    pub transport: u32,
+    pub payload: T,
+}
+
 /// An RPC service builder
 ///
 /// Types that implement this trait can be managed by [`Routes`].
@@ -263,6 +271,8 @@ impl<T: Send> futures_core::Stream for Stream<T> {
 ///
 /// Note, however, that if you register a client into `Routes`, the router will
 /// implement multiplexing and random selection of transport streams internally.
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 pub trait RpcServiceBuilder {
     const NAME: &'static str;
 
@@ -270,7 +280,7 @@ pub trait RpcServiceBuilder {
     type Output;
 
     #[cfg(not(doc))]
-    fn build(ctx: Self::Context, transport: transport::IOStream) -> Self::Output;
+    async fn build(ctx: Self::Context, stream: MessageStream) -> Self::Output;
 }
 
 pub(crate) mod task {

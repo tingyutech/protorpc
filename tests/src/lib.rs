@@ -152,8 +152,9 @@ impl Transport for Socket {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, sync::Arc};
 
+    use log::Level;
     use protorpc::routers::Routes;
     use tokio::net::TcpListener;
 
@@ -161,15 +162,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_integration() -> anyhow::Result<()> {
+        simple_logger::init_with_level(Level::Debug).unwrap();
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
         tokio::spawn(async move {
-            let routes = Routes::new();
+            let routes = Arc::new(Routes::new());
 
-            routes
-                .make_service::<proto::server::EchoServer<EchoService>>(EchoService)
-                .await;
+            let routes_ = routes.clone();
+            tokio::spawn(async move {
+                routes_.start_service::<proto::server::EchoServer<EchoService>>(EchoService).await;
+            });
 
             while let Ok((sokcet, _)) = listener.accept().await {
                 routes.add_stream(sokcet.into()).await;
