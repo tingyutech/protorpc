@@ -28,7 +28,7 @@ pub struct Session<T> {
 
 impl<T> std::fmt::Debug for Session<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BaseRequest")
+        f.debug_struct("Session")
             .field("service", &self.service)
             .field("method", &self.method)
             .field("metadata", &self.metadata)
@@ -156,15 +156,6 @@ impl SessionsManager {
         }
 
         None
-    }
-
-    fn error(&mut self, err: std::io::Error) {
-        for tx in self.stream_senders.values() {
-            let _ = tx.send(Err(RpcError::from(std::io::Error::new(
-                err.kind(),
-                err.to_string(),
-            ))));
-        }
     }
 }
 
