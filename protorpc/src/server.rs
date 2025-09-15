@@ -157,6 +157,15 @@ impl SessionsManager {
 
         None
     }
+
+    fn error(&mut self, err: std::io::Error) {
+        for tx in self.stream_senders.values() {
+            let _ = tx.send(Err(RpcError::from(std::io::Error::new(
+                err.kind(),
+                err.to_string(),
+            ))));
+        }
+    }
 }
 
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
