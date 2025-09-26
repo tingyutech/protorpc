@@ -191,7 +191,8 @@ impl Routes {
                 transport_senders: self.transport_senders.clone(),
                 receiver,
             },
-        ).await
+        )
+        .await
     }
 }
 

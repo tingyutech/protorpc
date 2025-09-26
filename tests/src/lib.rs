@@ -172,7 +172,9 @@ mod tests {
 
             let routes_ = routes.clone();
             tokio::spawn(async move {
-                routes_.start_service::<proto::server::EchoServer<EchoService>>(EchoService).await;
+                routes_
+                    .start_service::<proto::server::EchoServer<EchoService>>(EchoService)
+                    .await;
             });
 
             while let Ok((sokcet, _)) = listener.accept().await {

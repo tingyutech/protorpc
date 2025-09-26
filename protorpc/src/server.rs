@@ -285,10 +285,12 @@ where
                             },
                         ));
 
-                        let _ = writable_stream_.send(NamedPayload {
-                            payload: frame,
-                            transport,
-                        }).await;
+                        let _ = writable_stream_
+                            .send(NamedPayload {
+                                payload: frame,
+                                transport,
+                            })
+                            .await;
                     }
                 }
             });
@@ -296,5 +298,5 @@ where
     }
 
     #[cfg(feature = "log")]
-    log::info!("service closed, service = {}", T::NAME);
+    log::warn!("service closed, service = {}", T::NAME);
 }

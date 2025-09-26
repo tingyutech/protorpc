@@ -135,10 +135,7 @@ where
             spawn(async move {
                 while let Some(frame) = readable_stream.recv().await {
                     #[cfg(feature = "log")]
-                    log::debug!(
-                        "client core received a response frame, frame = {:?}",
-                        frame
-                    );
+                    log::debug!("client core received a response frame, frame = {:?}", frame);
 
                     match frame {
                         Ok(frame) => {

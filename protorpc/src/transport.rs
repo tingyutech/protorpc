@@ -1,5 +1,10 @@
 //! Transport layer related types
 
+use std::{
+    io::{Error, ErrorKind},
+    time::Duration,
+};
+
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
@@ -9,6 +14,104 @@ use tokio::{
 };
 
 use crate::{proto, result::IoResult, task::spawn};
+
+#[cfg(not(target_family = "wasm"))]
+use tokio::time::interval;
+
+#[cfg(target_family = "wasm")]
+use wasmtimer::tokio::interval;
+
+enum Payload {
+    Ping,
+    Pong,
+    Frame(proto::Frame),
+}
+
+impl Payload {
+    fn encode(&self, buffer: &mut BytesMut) {
+        buffer.clear();
+
+        // magic token
+        buffer.put("PROTORPC".as_bytes());
+
+        match self {
+            Self::Ping => {
+                buffer.put_u8(1);
+                buffer.put_u32(0);
+            }
+            Self::Pong => {
+                buffer.put_u8(2);
+                buffer.put_u32(0);
+            }
+            Self::Frame(frame) => {
+                buffer.put_u8(3);
+                buffer.put_u32(0);
+
+                frame.encode(buffer).unwrap();
+
+                let size = buffer.len() as u32 - 13;
+                buffer[9..13].copy_from_slice(&size.to_be_bytes());
+            }
+        }
+    }
+
+    fn try_decode(buffer: &mut BytesMut) -> IoResult<Option<Self>> {
+        if buffer.len() < 13 {
+            return Ok(None);
+        }
+
+        if &buffer[0..8] != "PROTORPC".as_bytes() {
+            return Err(Error::new(ErrorKind::InvalidData, "invalid magic token"));
+        }
+
+        match buffer[8] {
+            1 => {
+                buffer.advance(13);
+
+                Ok(Some(Self::Ping))
+            }
+            2 => {
+                buffer.advance(13);
+
+                Ok(Some(Self::Pong))
+            }
+            3 => {
+                let size = u32::from_be_bytes(buffer[9..13].try_into().unwrap()) as usize;
+                if size + 13 > buffer.len() {
+                    Ok(None)
+                } else {
+                    buffer.advance(13);
+
+                    Ok(Some(Self::Frame(
+                        proto::Frame::decode(&mut buffer.split_to(size))
+                            .map_err(|_| Error::new(ErrorKind::InvalidData, "invalid frame"))?,
+                    )))
+                }
+            }
+            _ => Err(Error::new(ErrorKind::InvalidData, "invalid type")),
+        }
+    }
+}
+
+async fn writeaf<T>(socket: &mut T, buffer: &[u8]) -> Result<(), Error>
+where
+    T: AsyncWrite + Unpin + Send + 'static,
+{
+    #[allow(unused_variables)]
+    if let Err(e) = socket.write_all(buffer).await {
+        #[cfg(feature = "log")]
+        log::warn!("transport write error: {:?}", e);
+
+        Err(e)
+    } else {
+        let _ = socket.flush().await;
+
+        Ok(())
+    }
+}
+
+const KEEPALIVE_INTERVAL: usize = 2;
+const KEEPALIVE_TIMEOUT: usize = 4;
 
 /// A wrapper for the input/output stream
 pub struct IOStream {
@@ -28,8 +131,40 @@ where
             let mut read_buffer = BytesMut::new();
             let mut send_buffer = BytesMut::new();
 
+            let mut interval = interval(Duration::from_secs(1));
+
+            // last keepalive time
+            let mut keepalive = 0;
+
             'a: loop {
                 tokio::select! {
+                    _ = interval.tick() => {
+                        if keepalive >= KEEPALIVE_TIMEOUT {
+                            #[cfg(feature = "log")]
+                            log::warn!("transport keepalive timeout, delay= {keepalive}");
+
+                            let _ = input_sender.send(Err(
+                                Error::new(
+                                    ErrorKind::TimedOut,
+                                    "transport keepalive timeout"
+                                )
+                            ));
+
+                            break 'a;
+                        }
+
+                        keepalive += 1;
+
+                        if keepalive % KEEPALIVE_INTERVAL == 0 {
+                            if writeaf(&mut transport, {
+                                Payload::Ping.encode(&mut send_buffer);
+
+                                &send_buffer
+                            }).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
                     ret = transport.read_buf(&mut read_buffer) => {
                         match ret {
                             Ok(size) => {
@@ -38,37 +173,38 @@ where
                                 }
 
                                 loop {
-                                    // There are at least 8 bytes, because there must be a
-                                    // length field
-                                    if read_buffer.len() < 8 {
-                                        break;
-                                    }
+                                    match Payload::try_decode(&mut read_buffer){
+                                        Ok(payload) => {
+                                            if let Some(payload) = payload {
+                                                match payload {
+                                                    Payload::Ping => {
+                                                        if writeaf(&mut transport, {
+                                                            Payload::Pong.encode(&mut send_buffer);
 
-                                    let content_len =
-                                        u32::from_be_bytes(read_buffer[..4].try_into().unwrap()) as usize;
-
-                                    if content_len + 8 > read_buffer.len() {
-                                        break;
-                                    }
-
-                                    // If the CRC check fails, it means this stream is already
-                                    // corrupted and cannot be recovered, so just close it.
-                                    if crc32fast::hash(&read_buffer[8..content_len + 8]) !=
-                                        u32::from_be_bytes(read_buffer[4..8].try_into().unwrap())
-                                    {
-                                        break 'a;
-                                    }
-
-                                    // skip len
-                                    read_buffer.advance(8);
-
-                                    match proto::Frame::decode(&mut read_buffer.split_to(content_len)) {
-                                        Ok(frame) => {
-                                            if input_sender.send(Ok(frame)).is_err() {
-                                                break 'a;
+                                                            &send_buffer
+                                                        }).await.is_err() {
+                                                            break;
+                                                        }
+                                                    }
+                                                    Payload::Pong => {
+                                                        keepalive = 0;
+                                                    }
+                                                    Payload::Frame(frame) => {
+                                                        if input_sender.send(Ok(frame)).is_err() {
+                                                            break 'a;
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                break;
                                             }
                                         }
-                                        Err(_) => {
+                                        Err(e) => {
+                                            #[cfg(feature = "log")]
+                                            log::warn!("transport decode payload error: {:?}", e);
+
+                                            let _ = input_sender.send(Err(e));
+
                                             break 'a;
                                         }
                                     }
@@ -77,7 +213,7 @@ where
                             #[allow(unused_variables)]
                             Err(e) => {
                                 #[cfg(feature = "log")]
-                                log::error!("transport read error: {:?}", e);
+                                log::warn!("transport read error: {:?}", e);
 
                                 let _ = input_sender.send(Err(e));
 
@@ -86,27 +222,12 @@ where
                         }
                     }
                     Some(frame) = output_receiver.recv() => {
-                        send_buffer.clear();
-                        send_buffer.put_u64(0);
+                        if writeaf(&mut transport, {
+                            Payload::Frame(frame).encode(&mut send_buffer);
 
-                        frame.encode(&mut send_buffer).unwrap();
-
-                        {
-                            let size = send_buffer.len() as u32 - 8;
-                            send_buffer[..4].copy_from_slice(size.to_be_bytes().as_ref());
-
-                            let checksum = crc32fast::hash(&send_buffer[8..]);
-                            send_buffer[4..8].copy_from_slice(checksum.to_be_bytes().as_ref());
-                        }
-
-                        #[allow(unused_variables)]
-                        if let Err(e) = transport.write_all(&send_buffer).await {
-                            #[cfg(feature = "log")]
-                            log::error!("transport write error: {:?}", e);
-
+                            &send_buffer
+                        }).await.is_err() {
                             break;
-                        } else {
-                            let _ = transport.flush().await;
                         }
                     }
                     else => {
@@ -116,7 +237,7 @@ where
             }
 
             #[cfg(feature = "log")]
-            log::info!("transport closed");
+            log::warn!("transport closed");
         });
 
         Self { sender, receiver }
