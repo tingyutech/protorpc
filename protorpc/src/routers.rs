@@ -118,44 +118,45 @@ impl Routes {
 
         spawn(async move {
             let mut closed_service = None;
-
-            loop {
+            
+            'a: loop {
                 tokio::select! {
-                    Some(Ok(frame)) = readable_stream.recv() => {
-                        #[cfg(feature = "log")]
-                        log::debug!("transport received a frame, number = {}, frame = {:?}", sequence, frame);
+                    ret = readable_stream.recv() => {
+                        if let Some(Ok(frame)) = ret {
+                            #[cfg(feature = "log")]
+                            log::debug!("transport received a frame, number = {}, frame = {:?}", sequence, frame);
 
-                        {
-                            if let Some(sender) = service_senders.read().await.get(&frame.service) {
-                                if !sender.is_closed() {
-                                    let _ = sender.send(NamedPayload {
-                                        transport: sequence,
-                                        payload: Ok(frame)
-                                    });
-                                } else {
-                                    closed_service = Some(frame.service);
+                            {
+                                if let Some(sender) = service_senders.read().await.get(&frame.service) {
+                                    if !sender.is_closed() {
+                                        let _ = sender.send(NamedPayload {
+                                            transport: sequence,
+                                            payload: Ok(frame)
+                                        });
+                                    } else {
+                                        closed_service = Some(frame.service);
+                                    }
                                 }
                             }
+
+                            if let Some(service) = closed_service.take() {
+                                let _ = service_senders.write().await.remove(&service);
+                            }
+                        } else {
+                            break 'a;
                         }
                     }
                     _ = drop_notify_receiver_.recv() => {
                         #[cfg(feature = "log")]
-                        log::info!("transport exited for rpc dropped, number = {}", sequence);
+                        log::warn!("transport exited for rpc dropped, number = {}", sequence);
 
-                        break;
+                        break 'a;
                     }
-                    else => {
-                        break;
-                    }
-                }
-
-                if let Some(service) = closed_service.take() {
-                    let _ = service_senders.write().await.remove(&service);
                 }
             }
 
             #[cfg(feature = "log")]
-            log::info!("transport closed, number = {}", sequence);
+            log::warn!("routers transport closed, number = {}", sequence);
 
             let _ = transport_senders.write().await.remove(&sequence);
 

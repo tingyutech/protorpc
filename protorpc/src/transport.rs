@@ -238,6 +238,8 @@ where
 
             #[cfg(feature = "log")]
             log::warn!("transport closed");
+
+            input_sender.closed().await;
         });
 
         Self { sender, receiver }
