@@ -26,16 +26,6 @@ pub struct Session<T> {
     pub payload: T,
 }
 
-impl<T> std::fmt::Debug for Session<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Session")
-            .field("service", &self.service)
-            .field("method", &self.method)
-            .field("metadata", &self.metadata)
-            .finish()
-    }
-}
-
 impl Session<Stream<Result<Vec<u8>, RpcError>>> {
     pub async fn into_once<T: Message + Default>(mut self) -> Result<Request<T>, RpcError> {
         Ok(Request {
@@ -76,6 +66,15 @@ impl Session<Stream<Result<Vec<u8>, RpcError>>> {
                     }
                 }
             }
+
+            #[cfg(feature = "log")]
+            log::info!(
+                "session stream closed, transport={}, service={}, method={}, order_number={:?}",
+                self.transport,
+                self.service,
+                self.method,
+                self.order_number,
+            );
         });
 
         Request {
@@ -86,10 +85,29 @@ impl Session<Stream<Result<Vec<u8>, RpcError>>> {
     }
 }
 
+struct SessionChannel {
+    transport: u32,
+    order_number: OrderNumber,
+    service: String,
+    method: String,
+    sender: UnboundedSender<Result<Vec<u8>, RpcError>>,
+}
+
+impl std::fmt::Debug for SessionChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("transport", &self.transport)
+            .field("order_number", &self.order_number)
+            .field("service", &self.service)
+            .field("method", &self.method)
+            .finish()
+    }
+}
+
 #[derive(Default)]
 struct SessionsManager {
     transport_bound: HashMap<u32, HashSet<OrderNumber>>,
-    request_senders: HashMap<OrderNumber, UnboundedSender<Result<Vec<u8>, RpcError>>>,
+    channels: HashMap<OrderNumber, SessionChannel>,
 }
 
 impl SessionsManager {
@@ -105,12 +123,28 @@ impl SessionsManager {
                     match payload {
                         proto::frame::Payload::RequestHeader(header) => {
                             let (tx, rx) = unbounded_channel::<Result<Vec<u8>, RpcError>>();
-                            self.request_senders.insert(order_number, tx);
+                            self.channels.insert(
+                                order_number,
+                                SessionChannel {
+                                    transport,
+                                    order_number,
+                                    service: frame.service.clone(),
+                                    method: frame.method.clone(),
+                                    sender: tx,
+                                },
+                            );
 
                             self.transport_bound
                                 .entry(transport)
                                 .or_default()
                                 .insert(order_number);
+
+                            #[cfg(feature = "log")]
+                            log::info!(
+                                "server recv a new session, transport={transport}, service={}, method={}, order_number={order_number:?}",
+                                frame.service,
+                                frame.method
+                            );
 
                             return Some(Session {
                                 payload: Stream::from(UnboundedReceiverStream::from(rx)),
@@ -122,15 +156,18 @@ impl SessionsManager {
                             });
                         }
                         proto::frame::Payload::Request(request) => {
-                            if let Some(tx) = self.request_senders.get(&order_number).as_ref() {
-                                let _ = tx.send(Ok(request.payload));
+                            if let Some(channel) = self.channels.get(&order_number).as_ref() {
+                                let _ = channel.sender.send(Ok(request.payload));
                             }
                         }
                         proto::frame::Payload::EndOfStream(frame) => {
-                            if let Some(tx) = self.request_senders.remove(&order_number) {
+                            if let Some(channel) = self.channels.remove(&order_number) {
                                 if let Some(e) = frame.error {
-                                    let _ = tx.send(Err(RpcError::from(e)));
+                                    let _ = channel.sender.send(Err(RpcError::from(e)));
                                 }
+
+                                #[cfg(feature = "log")]
+                                log::info!("session closed: session = {channel:?}");
                             }
 
                             if let Some(items) = self.transport_bound.get_mut(&transport) {
@@ -144,11 +181,14 @@ impl SessionsManager {
             Err(e) => {
                 if let Some(items) = self.transport_bound.remove(&transport) {
                     for order_number in items {
-                        if let Some(tx) = self.request_senders.remove(&order_number) {
-                            let _ = tx.send(Err(RpcError::from(std::io::Error::new(
+                        if let Some(channel) = self.channels.remove(&order_number) {
+                            let _ = channel.sender.send(Err(RpcError::from(std::io::Error::new(
                                 e.kind(),
                                 e.to_string(),
                             ))));
+
+                            #[cfg(feature = "log")]
+                            log::warn!("session recv a error = {e:?}, session = {channel:?}");
                         }
                     }
                 }

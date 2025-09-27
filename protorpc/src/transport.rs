@@ -116,7 +116,7 @@ const KEEPALIVE_TIMEOUT: usize = 4;
 /// A wrapper for the input/output stream
 pub struct IOStream {
     pub(crate) sender: UnboundedSender<proto::Frame>,
-    pub(crate) receiver: UnboundedReceiver<IoResult<proto::Frame>>,
+    pub(crate) receiver: UnboundedReceiver<Option<IoResult<proto::Frame>>>,
 }
 
 impl<T> From<T> for IOStream
@@ -125,7 +125,7 @@ where
 {
     fn from(mut transport: T) -> Self {
         let (sender, mut output_receiver) = unbounded_channel::<proto::Frame>();
-        let (input_sender, receiver) = unbounded_channel::<IoResult<proto::Frame>>();
+        let (input_sender, receiver) = unbounded_channel::<Option<IoResult<proto::Frame>>>();
 
         spawn(async move {
             let mut read_buffer = BytesMut::new();
@@ -136,6 +136,8 @@ where
             // last keepalive time
             let mut keepalive = 0;
 
+            let mut current_error: Option<std::io::Error> = None;
+
             'a: loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -143,11 +145,9 @@ where
                             #[cfg(feature = "log")]
                             log::warn!("transport keepalive timeout, delay= {keepalive}");
 
-                            let _ = input_sender.send(Err(
-                                Error::new(
-                                    ErrorKind::TimedOut,
-                                    "transport keepalive timeout"
-                                )
+                            current_error = Some(Error::new(
+                                ErrorKind::TimedOut,
+                                "transport keepalive timeout"
                             ));
 
                             break 'a;
@@ -156,12 +156,14 @@ where
                         keepalive += 1;
 
                         if keepalive % KEEPALIVE_INTERVAL == 0 {
-                            if writeaf(&mut transport, {
+                            if let Err(e) = writeaf(&mut transport, {
                                 Payload::Ping.encode(&mut send_buffer);
 
                                 &send_buffer
-                            }).await.is_err() {
-                                break;
+                            }).await {
+                                current_error = Some(e);
+
+                                break 'a;
                             }
                         }
                     }
@@ -178,19 +180,21 @@ where
                                             if let Some(payload) = payload {
                                                 match payload {
                                                     Payload::Ping => {
-                                                        if writeaf(&mut transport, {
+                                                        if let Err(e) = writeaf(&mut transport, {
                                                             Payload::Pong.encode(&mut send_buffer);
 
                                                             &send_buffer
-                                                        }).await.is_err() {
-                                                            break;
+                                                        }).await {
+                                                            current_error = Some(e);
+
+                                                            break 'a;
                                                         }
                                                     }
                                                     Payload::Pong => {
                                                         keepalive = 0;
                                                     }
                                                     Payload::Frame(frame) => {
-                                                        if input_sender.send(Ok(frame)).is_err() {
+                                                        if input_sender.send(Some(Ok(frame))).is_err() {
                                                             break 'a;
                                                         }
                                                     }
@@ -203,7 +207,7 @@ where
                                             #[cfg(feature = "log")]
                                             log::warn!("transport decode payload error: {:?}", e);
 
-                                            let _ = input_sender.send(Err(e));
+                                            current_error = Some(e);
 
                                             break 'a;
                                         }
@@ -215,31 +219,34 @@ where
                                 #[cfg(feature = "log")]
                                 log::warn!("transport read error: {:?}", e);
 
-                                let _ = input_sender.send(Err(e));
+                                current_error = Some(e);
 
                                 break 'a;
                             }
                         }
                     }
-                    Some(frame) = output_receiver.recv() => {
-                        if writeaf(&mut transport, {
-                            Payload::Frame(frame).encode(&mut send_buffer);
-
-                            &send_buffer
-                        }).await.is_err() {
+                    ret = output_receiver.recv() => {
+                        if let Some(frame) = ret {
+                            if let Err(e) = writeaf(&mut transport, {
+                                Payload::Frame(frame).encode(&mut send_buffer);
+    
+                                &send_buffer
+                            }).await {
+                                current_error = Some(e);
+                                
+                                break 'a;
+                            }
+                        } else {
                             break;
                         }
-                    }
-                    else => {
-                        break;
                     }
                 }
             }
 
             #[cfg(feature = "log")]
-            log::warn!("transport closed");
+            log::warn!("transport stream closed");
 
-            input_sender.closed().await;
+            let _ = input_sender.send(current_error.map(Err));
         });
 
         Self { sender, receiver }

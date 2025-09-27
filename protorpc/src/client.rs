@@ -133,7 +133,7 @@ where
             let mut response_header_sender = Some(response_header_sender);
 
             spawn(async move {
-                while let Some(frame) = readable_stream.recv().await {
+                while let Some(Some(frame)) = readable_stream.recv().await {
                     #[cfg(feature = "log")]
                     log::debug!("client core received a response frame, frame = {:?}", frame);
 
