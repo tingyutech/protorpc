@@ -47,7 +47,15 @@ pub fn make_client(service: &Service) -> TokenStream {
                     payload
                     .next()
                     .await
-                    .ok_or_else(|| protorpc::result::RpcError::invalid_stream())??
+                    .ok_or_else(|| {
+                        protorpc::result::RpcError::invalid_stream_with_message(
+                            format!(
+                                "InvalidStream, service: {}, method: {}", 
+                                #service_attr, 
+                                #method_attr
+                            ).as_str()
+                        )
+                    })??
                 }
             } else {
                 quote! { payload }

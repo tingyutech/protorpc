@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use prost::Message;
 use tokio::{
@@ -68,14 +68,12 @@ where
         // Let the external transport layer create an independent stream for the
         // current request.
         let order_number = Uuid::new_v4().as_u128();
-        let IOStream {
-            receiver: mut readable_stream,
-            sender: writable_stream,
-        } = self
+        let socket: Arc<IOStream> = self
             .0
             .create_stream(order_number)
             .await
-            .map_err(|e| RpcError::from(e))?;
+            .map_err(|e| RpcError::from(e))?
+            .into();
 
         #[cfg(feature = "log")]
         log::debug!(
@@ -117,7 +115,7 @@ where
                 metadata: req.metadata,
             }));
 
-            writable_stream
+            socket
                 .send(frame.clone())
                 .map_err(|_| RpcError::terminated())?;
 
@@ -131,76 +129,89 @@ where
 
         {
             let mut response_header_sender = Some(response_header_sender);
+            let socket = socket.clone();
 
             spawn(async move {
-                while let Some(Some(frame)) = readable_stream.recv().await {
+                let mut endofstream = false;
+                let mut current_error: Option<std::io::Error> = None;
+
+                while let Some(frame) = socket.recv().await {
+                    let frame = match frame {
+                        Ok(it) => it,
+                        Err(e) => {
+                            current_error = Some(e);
+
+                            break;
+                        }
+                    };
+
                     #[cfg(feature = "log")]
                     log::debug!("client core received a response frame, frame = {:?}", frame);
 
-                    match frame {
-                        Ok(frame) => {
-                            if frame.order_number() != order_number {
-                                continue;
-                            }
+                    if frame.order_number() != order_number {
+                        continue;
+                    }
 
-                            if let Some(payload) = frame.payload {
-                                match payload {
-                                    proto::frame::Payload::Response(response) => {
-                                        // Received a response before receiving the response header,
-                                        // this is an invalid stream.
-                                        if let Some(tx) = response_header_sender.take() {
-                                            let _ = tx.send(Err(RpcError::invalid_stream().into()));
+                    if let Some(payload) = frame.payload {
+                        match payload {
+                            proto::frame::Payload::Response(response) => {
+                                // Received a response before receiving the response header,
+                                // this is an invalid stream.
+                                if let Some(tx) = response_header_sender.take() {
+                                    let _ = tx.send(Err(RpcError::invalid_stream().into()));
 
-                                            break;
-                                        }
+                                    break;
+                                }
 
-                                        // Any error here will cause the current stream to be
-                                        // terminated directly.
-                                        if let Ok(payload) = S::decode(response.payload.as_ref()) {
-                                            if response_stream_sender.send(Ok(payload)).is_err() {
-                                                break;
-                                            }
-                                        } else {
-                                            break;
-                                        }
-                                    }
-                                    proto::frame::Payload::ResponseHeader(header) => {
-                                        let _ = response_header_sender.take().map(|it| {
-                                            it.send(if header.success {
-                                                Ok(header.metadata)
-                                            } else {
-                                                Err(header
-                                                    .error
-                                                    .map(|e| RpcError::from(e))
-                                                    .unwrap_or_else(|| RpcError::unknown().into()))
-                                            })
-                                        });
-                                    }
-                                    proto::frame::Payload::EndOfStream(frame) => {
-                                        if let Some(tx) = response_header_sender.take() {
-                                            let _ = tx.send(Err(RpcError::invalid_stream().into()));
-                                        } else {
-                                            if let Some(e) = frame.error {
-                                                let _ = response_stream_sender
-                                                    .send(Err(RpcError::from(e)));
-                                            }
-                                        }
-
+                                // Any error here will cause the current stream to be
+                                // terminated directly.
+                                if let Ok(payload) = S::decode(response.payload.as_ref()) {
+                                    if response_stream_sender.send(Ok(payload)).is_err() {
                                         break;
                                     }
-                                    _ => (),
+                                } else {
+                                    break;
                                 }
                             }
-                        }
-                        Err(e) => {
-                            let err = RpcError::from(e);
-
-                            if let Some(tx) = response_header_sender.take() {
-                                let _ = tx.send(Err(err));
-                            } else {
-                                let _ = response_stream_sender.send(Err(err));
+                            proto::frame::Payload::ResponseHeader(header) => {
+                                let _ = response_header_sender.take().map(|it| {
+                                    it.send(if header.success {
+                                        Ok(header.metadata)
+                                    } else {
+                                        Err(header
+                                            .error
+                                            .map(|e| RpcError::from(e))
+                                            .unwrap_or_else(|| RpcError::unknown().into()))
+                                    })
+                                });
                             }
+                            proto::frame::Payload::EndOfStream(frame) => {
+                                endofstream = true;
+
+                                if let Some(tx) = response_header_sender.take() {
+                                    let _ = tx.send(Err(RpcError::invalid_stream().into()));
+                                } else {
+                                    if let Some(e) = frame.error {
+                                        let _ = response_stream_sender.send(Err(RpcError::from(e)));
+                                    }
+                                }
+
+                                break;
+                            }
+                            _ => (),
                         }
+                    }
+                }
+
+                if let Some(e) = current_error
+                    && !endofstream
+                {
+                    let err = RpcError::from(e);
+
+                    if let Some(tx) = response_header_sender.take() {
+                        let _ = tx.send(Err(err));
+                    } else {
+                        let _ = response_stream_sender.send(Err(err));
                     }
                 }
 
@@ -215,8 +226,6 @@ where
         }
 
         {
-            let output_frame_sender = writable_stream.clone();
-
             spawn(async move {
                 let mut serial_number = 0;
                 let mut result = None;
@@ -246,7 +255,7 @@ where
                     serial_number += 1;
 
                     #[allow(unused_variables)]
-                    if let Err(e) = output_frame_sender.send(frame.clone()) {
+                    if let Err(e) = socket.send(frame.clone()) {
                         #[cfg(feature = "log")]
                         log::warn!(
                             "client core failed to send a response frame, service = {}, order id = {:?}, error = {:?}",
@@ -281,7 +290,7 @@ where
                             }),
                     ));
 
-                    let _ = output_frame_sender.send(frame.clone());
+                    let _ = socket.send(frame.clone());
                 }
             });
         }

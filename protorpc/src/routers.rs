@@ -71,7 +71,7 @@ pub struct Routes {
 
     // Frames that need to be sent to a specific transport layer can be delivered
     // through this channel
-    transport_senders: Arc<RwLock<HashMap<u32, UnboundedSender<proto::Frame>>>>,
+    transport_senders: Arc<RwLock<HashMap<u32, Arc<IOStream>>>>,
     // Frames that need to be sent to a specific service implementation can be
     // delivered through this channel
     service_senders:
@@ -93,11 +93,9 @@ impl Routes {
     /// Add a transport layer stream, used to receive and send data.
     pub async fn add_stream(
         &self,
-        IOStream {
-            receiver: mut readable_stream,
-            sender: writable_stream,
-        }: IOStream,
+        socket: IOStream,
     ) {
+        let socket: Arc<IOStream> = socket.into();
         let sequence = TRASNPORT_NUMBER.fetch_add(1, Ordering::Relaxed);
 
         let transport_senders = self.transport_senders.clone();
@@ -106,13 +104,10 @@ impl Routes {
         transport_senders
             .write()
             .await
-            .insert(sequence, writable_stream);
+            .insert(sequence, socket.clone());
 
         #[cfg(feature = "log")]
-        log::info!(
-            "routes added a transport, assigned sequence = {}",
-            sequence
-        );
+        log::info!("routes added a transport, assigned sequence = {}", sequence);
 
         let mut drop_notify_receiver = self.drop_notify_receiver.resubscribe();
 
@@ -121,8 +116,8 @@ impl Routes {
 
             loop {
                 tokio::select! {
-                    ret = readable_stream.recv() => {
-                        if let Some(Some(Ok(frame))) = ret {
+                    ret = socket.recv() => {
+                        if let Some(Ok(frame)) = ret {
                             #[cfg(feature = "log")]
                             log::debug!("routes received a frame, number = {}, frame = {:?}", sequence, frame);
 
@@ -139,8 +134,8 @@ impl Routes {
                                 } else {
                                     #[cfg(feature = "log")]
                                     log::warn!(
-                                        "routes not found service, sequence = {sequence}, service = {}, method = {}", 
-                                        frame.service, 
+                                        "routes not found service, sequence = {sequence}, service = {}, method = {}",
+                                        frame.service,
                                         frame.method,
                                     );
                                 }
@@ -199,7 +194,7 @@ impl Routes {
         S::build(
             ctx,
             MessageStream {
-                transport_senders: self.transport_senders.clone(),
+                senders: self.transport_senders.clone(),
                 receiver,
             },
         )
@@ -218,20 +213,20 @@ impl Drop for Routes {
 
 pub struct MessageStream {
     receiver: UnboundedReceiver<NamedPayload<IoResult<proto::Frame>>>,
-    transport_senders: Arc<RwLock<HashMap<u32, UnboundedSender<proto::Frame>>>>,
+    senders: Arc<RwLock<HashMap<u32, Arc<IOStream>>>>,
 }
 
 impl MessageStream {
     pub fn split(self) -> (MessageStreamSender, MessageStreamReceiver) {
         (
-            MessageStreamSender(self.transport_senders),
+            MessageStreamSender(self.senders),
             MessageStreamReceiver(self.receiver),
         )
     }
 }
 
 #[derive(Clone)]
-pub struct MessageStreamSender(Arc<RwLock<HashMap<u32, UnboundedSender<proto::Frame>>>>);
+pub struct MessageStreamSender(Arc<RwLock<HashMap<u32, Arc<IOStream>>>>);
 
 impl MessageStreamSender {
     pub async fn send(&self, message: NamedPayload<proto::Frame>) -> IoResult<()> {

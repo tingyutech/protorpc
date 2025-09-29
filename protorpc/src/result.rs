@@ -134,6 +134,10 @@ impl RpcError {
         Self::Io(IoError::new(ErrorKind::InvalidInput, "InvalidStream").into())
     }
 
+    pub fn invalid_stream_with_message(message: &str) -> Self {
+        Self::Io(IoError::new(ErrorKind::InvalidInput, message).into())
+    }
+
     pub fn terminated() -> Self {
         Self::Io(IoError::new(ErrorKind::ConnectionAborted, "Terminated").into())
     }

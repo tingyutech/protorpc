@@ -1,29 +1,21 @@
 //! Transport layer related types
 
-use std::{
-    io::{Error, ErrorKind},
-    time::Duration,
-};
+use std::io::{Error, ErrorKind, Result};
 
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    sync::{
+        Mutex,
+        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    },
 };
 
-use crate::{proto, result::IoResult, task::spawn};
-
-#[cfg(not(target_family = "wasm"))]
-use tokio::time::interval;
-
-#[cfg(target_family = "wasm")]
-use wasmtimer::tokio::interval;
+use crate::{proto, task::spawn};
 
 enum Payload {
-    Ping,
-    Pong,
     Frame(proto::Frame),
 }
 
@@ -35,14 +27,6 @@ impl Payload {
         buffer.put("PROTORPC".as_bytes());
 
         match self {
-            Self::Ping => {
-                buffer.put_u8(1);
-                buffer.put_u32(0);
-            }
-            Self::Pong => {
-                buffer.put_u8(2);
-                buffer.put_u32(0);
-            }
             Self::Frame(frame) => {
                 buffer.put_u8(3);
                 buffer.put_u32(0);
@@ -55,7 +39,7 @@ impl Payload {
         }
     }
 
-    fn try_decode(buffer: &mut BytesMut) -> IoResult<Option<Self>> {
+    fn try_decode(buffer: &mut BytesMut) -> Result<Option<Self>> {
         if buffer.len() < 13 {
             return Ok(None);
         }
@@ -65,16 +49,6 @@ impl Payload {
         }
 
         match buffer[8] {
-            1 => {
-                buffer.advance(13);
-
-                Ok(Some(Self::Ping))
-            }
-            2 => {
-                buffer.advance(13);
-
-                Ok(Some(Self::Pong))
-            }
             3 => {
                 let size = u32::from_be_bytes(buffer[9..13].try_into().unwrap()) as usize;
                 if size + 13 > buffer.len() {
@@ -93,7 +67,7 @@ impl Payload {
     }
 }
 
-async fn writeaf<T>(socket: &mut T, buffer: &[u8]) -> Result<(), Error>
+async fn writeaf<T>(socket: &mut T, buffer: &[u8]) -> Result<()>
 where
     T: AsyncWrite + Unpin + Send + 'static,
 {
@@ -110,13 +84,22 @@ where
     }
 }
 
-const KEEPALIVE_INTERVAL: usize = 2;
-const KEEPALIVE_TIMEOUT: usize = 4;
-
 /// A wrapper for the input/output stream
 pub struct IOStream {
-    pub(crate) sender: UnboundedSender<proto::Frame>,
-    pub(crate) receiver: UnboundedReceiver<Option<IoResult<proto::Frame>>>,
+    sender: UnboundedSender<proto::Frame>,
+    receiver: Mutex<UnboundedReceiver<Result<proto::Frame>>>,
+}
+
+impl IOStream {
+    pub async fn recv(&self) -> Option<Result<proto::Frame>> {
+        self.receiver.lock().await.recv().await
+    }
+
+    pub fn send(&self, frame: proto::Frame) -> Result<()> {
+        self.sender
+            .send(frame)
+            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))
+    }
 }
 
 impl<T> From<T> for IOStream
@@ -125,52 +108,23 @@ where
 {
     fn from(mut transport: T) -> Self {
         let (sender, mut output_receiver) = unbounded_channel::<proto::Frame>();
-        let (input_sender, receiver) = unbounded_channel::<Option<IoResult<proto::Frame>>>();
+        let (input_sender, receiver) = unbounded_channel::<Result<proto::Frame>>();
 
         spawn(async move {
             let mut read_buffer = BytesMut::new();
             let mut send_buffer = BytesMut::new();
 
-            let mut interval = interval(Duration::from_secs(1));
-
-            // last keepalive time
-            let mut keepalive = 0;
-
             let mut current_error: Option<std::io::Error> = None;
 
             'a: loop {
                 tokio::select! {
-                    _ = interval.tick() => {
-                        if keepalive >= KEEPALIVE_TIMEOUT {
-                            #[cfg(feature = "log")]
-                            log::warn!("transport keepalive timeout, delay= {keepalive}");
-
-                            current_error = Some(Error::new(
-                                ErrorKind::TimedOut,
-                                "transport keepalive timeout"
-                            ));
-
-                            break 'a;
-                        }
-
-                        keepalive += 1;
-
-                        if keepalive % KEEPALIVE_INTERVAL == 0 {
-                            if let Err(e) = writeaf(&mut transport, {
-                                Payload::Ping.encode(&mut send_buffer);
-
-                                &send_buffer
-                            }).await {
-                                current_error = Some(e);
-
-                                break 'a;
-                            }
-                        }
-                    }
                     ret = transport.read_buf(&mut read_buffer) => {
                         match ret {
                             Ok(size) => {
                                 if size == 0 {
+                                    #[cfg(feature = "log")]
+                                    log::warn!("transport read size is 0");
+
                                     break;
                                 }
 
@@ -179,22 +133,8 @@ where
                                         Ok(payload) => {
                                             if let Some(payload) = payload {
                                                 match payload {
-                                                    Payload::Ping => {
-                                                        if let Err(e) = writeaf(&mut transport, {
-                                                            Payload::Pong.encode(&mut send_buffer);
-
-                                                            &send_buffer
-                                                        }).await {
-                                                            current_error = Some(e);
-
-                                                            break 'a;
-                                                        }
-                                                    }
-                                                    Payload::Pong => {
-                                                        keepalive = 0;
-                                                    }
                                                     Payload::Frame(frame) => {
-                                                        if input_sender.send(Some(Ok(frame))).is_err() {
+                                                        if input_sender.send(Ok(frame)).is_err() {
                                                             break 'a;
                                                         }
                                                     }
@@ -229,14 +169,17 @@ where
                         if let Some(frame) = ret {
                             if let Err(e) = writeaf(&mut transport, {
                                 Payload::Frame(frame).encode(&mut send_buffer);
-    
+
                                 &send_buffer
                             }).await {
                                 current_error = Some(e);
-                                
+
                                 break 'a;
                             }
                         } else {
+                            #[cfg(feature = "log")]
+                            log::warn!("transport output receiver is closed");
+
                             break;
                         }
                     }
@@ -246,10 +189,15 @@ where
             #[cfg(feature = "log")]
             log::warn!("transport stream closed");
 
-            let _ = input_sender.send(current_error.map(Err));
+            if let Some(e) = current_error {
+                let _ = input_sender.send(Err(e));
+            }
         });
 
-        Self { sender, receiver }
+        Self {
+            sender,
+            receiver: receiver.into(),
+        }
     }
 }
 
@@ -264,5 +212,5 @@ where
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 pub trait Transport: Send + Sync {
-    async fn create_stream(&self, id: u128) -> IoResult<IOStream>;
+    async fn create_stream(&self, id: u128) -> Result<IOStream>;
 }
