@@ -203,15 +203,15 @@ where
                     }
                 }
 
-                if let Some(e) = current_error
-                    && !endofstream
-                {
-                    let err = RpcError::from(e);
+                if let Some(e) = current_error {
+                    if !endofstream {
+                        let err = RpcError::from(e);
 
-                    if let Some(tx) = response_header_sender.take() {
-                        let _ = tx.send(Err(err));
-                    } else {
-                        let _ = response_stream_sender.send(Err(err));
+                        if let Some(tx) = response_header_sender.take() {
+                            let _ = tx.send(Err(err));
+                        } else {
+                            let _ = response_stream_sender.send(Err(err));
+                        }
                     }
                 }
 
