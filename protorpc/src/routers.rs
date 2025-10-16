@@ -91,10 +91,7 @@ impl Routes {
     }
 
     /// Add a transport layer stream, used to receive and send data.
-    pub async fn add_stream(
-        &self,
-        socket: IOStream,
-    ) {
+    pub async fn add_stream(&self, socket: IOStream) {
         let socket: Arc<IOStream> = socket.into();
         let sequence = TRASNPORT_NUMBER.fetch_add(1, Ordering::Relaxed);
 

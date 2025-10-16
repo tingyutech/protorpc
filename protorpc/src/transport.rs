@@ -23,47 +23,46 @@ impl Payload {
     fn encode(&self, buffer: &mut BytesMut) {
         buffer.clear();
 
-        // magic token
-        buffer.put("PROTORPC".as_bytes());
-
         match self {
             Self::Frame(frame) => {
-                buffer.put_u8(3);
-                buffer.put_u32(0);
+                buffer.put_u64(0);
 
                 frame.encode(buffer).unwrap();
 
-                let size = buffer.len() as u32 - 13;
-                buffer[9..13].copy_from_slice(&size.to_be_bytes());
+                let size = buffer.len() as u32 - 8;
+                buffer[..4].copy_from_slice(size.to_be_bytes().as_ref());
+
+                let checksum = crc32fast::hash(&buffer[8..]);
+                buffer[4..8].copy_from_slice(checksum.to_be_bytes().as_ref());
             }
         }
     }
 
     fn try_decode(buffer: &mut BytesMut) -> Result<Option<Self>> {
-        if buffer.len() < 13 {
+        if buffer.len() < 8 {
             return Ok(None);
         }
 
-        if &buffer[0..8] != "PROTORPC".as_bytes() {
-            return Err(Error::new(ErrorKind::InvalidData, "invalid magic token"));
+        let size = u32::from_be_bytes(buffer[..4].try_into().unwrap()) as usize;
+        if size + 8 > buffer.len() {
+            return Ok(None);
         }
 
-        match buffer[8] {
-            3 => {
-                let size = u32::from_be_bytes(buffer[9..13].try_into().unwrap()) as usize;
-                if size + 13 > buffer.len() {
-                    Ok(None)
-                } else {
-                    buffer.advance(13);
-
-                    Ok(Some(Self::Frame(
-                        proto::Frame::decode(&mut buffer.split_to(size))
-                            .map_err(|_| Error::new(ErrorKind::InvalidData, "invalid frame"))?,
-                    )))
-                }
-            }
-            _ => Err(Error::new(ErrorKind::InvalidData, "invalid type")),
+        // If the CRC check fails, it means this stream is already
+        // corrupted and cannot be recovered, so just close it.
+        if crc32fast::hash(&buffer[8..size + 8])
+            != u32::from_be_bytes(buffer[4..8].try_into().unwrap())
+        {
+            return Err(Error::new(ErrorKind::InvalidData, "invalid frame"));
         }
+
+        // skip len & checksum
+        buffer.advance(8);
+
+        Ok(Some(Self::Frame(
+            proto::Frame::decode(&mut buffer.split_to(size))
+                .map_err(|_| Error::new(ErrorKind::InvalidData, "invalid frame"))?,
+        )))
     }
 }
 

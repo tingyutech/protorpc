@@ -51,7 +51,7 @@ pub fn make_client(service: &Service) -> TokenStream {
                         protorpc::result::RpcError::invalid_stream_with_message(
                             format!(
                                 "InvalidStream, service: {}, method: {}", 
-                                #service_attr, 
+                                #service_attr,
                                 #method_attr
                             ).as_str()
                         )
