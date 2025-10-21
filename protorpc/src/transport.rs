@@ -1,6 +1,9 @@
 //! Transport layer related types
 
-use std::io::{Error, ErrorKind, Result};
+use std::{
+    io::{Error, ErrorKind, Result},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, BytesMut};
@@ -212,4 +215,20 @@ where
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 pub trait Transport: Send + Sync {
     async fn create_stream(&self, id: u128) -> Result<IOStream>;
+}
+
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+impl<T: Transport + ?Sized> Transport for Arc<T> {
+    async fn create_stream(&self, id: u128) -> Result<IOStream> {
+        T::create_stream(self, id).await
+    }
+}
+
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+impl<T: Transport + ?Sized> Transport for Box<T> {
+    async fn create_stream(&self, id: u128) -> Result<IOStream> {
+        T::create_stream(self, id).await
+    }
 }
