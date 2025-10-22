@@ -27,7 +27,7 @@ use prost::Message;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
-use crate::{Stream, result::RpcError, task::spawn};
+use crate::{Stream, helper::spawn, result::RpcError};
 
 /// Represents a response
 pub struct Response<T> {
