@@ -106,6 +106,8 @@ pub mod client;
 #[cfg(not(doc))]
 pub mod server;
 
+pub mod helper;
+
 /// see: <https://docs.rs/async-trait/latest/async_trait>
 pub use async_trait::async_trait;
 pub use futures_core;
@@ -228,11 +230,6 @@ impl<T: Send> futures_core::Stream for Stream<T> {
     }
 }
 
-pub struct NamedPayload<T> {
-    pub transport: u32,
-    pub payload: T,
-}
-
 /// An RPC service builder
 ///
 /// Types that implement this trait can be managed by [`Routes`].
@@ -281,20 +278,4 @@ pub trait RpcServiceBuilder {
 
     #[cfg(not(doc))]
     async fn build(ctx: Self::Context, stream: MessageStream) -> Self::Output;
-}
-
-pub(crate) mod task {
-    #[cfg(not(target_family = "wasm"))]
-    pub use tokio::spawn;
-
-    #[cfg(target_family = "wasm")]
-    pub fn spawn<T>(future: T)
-    where
-        T: Future + 'static,
-        T::Output: 'static,
-    {
-        wasm_bindgen_futures::spawn_local(async move {
-            future.await;
-        });
-    }
 }

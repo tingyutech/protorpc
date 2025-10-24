@@ -9,39 +9,37 @@ use async_trait::async_trait;
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite},
     sync::{
         Mutex,
         mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     },
 };
 
-use crate::{proto, task::spawn};
+use crate::{helper::spawn, helper::writeaf, proto};
 
-enum Payload {
-    Frame(proto::Frame),
-}
-
-impl Payload {
-    fn encode(&self, buffer: &mut BytesMut) {
+impl proto::Frame {
+    fn write_buf(&self, buffer: &mut BytesMut) {
         buffer.clear();
 
-        match self {
-            Self::Frame(frame) => {
-                buffer.put_u64(0);
+        // Reserve space for length and checksum (8 bytes)
+        buffer.put_u64(0);
 
-                frame.encode(buffer).unwrap();
+        // Encode the frame
+        self.encode(buffer).unwrap();
 
-                let size = buffer.len() as u32 - 8;
-                buffer[..4].copy_from_slice(size.to_be_bytes().as_ref());
+        // Calculate the payload size (excluding the 8-byte header)
+        let size = buffer.len() as u32 - 8;
+        
+        // Write the size to the first 4 bytes
+        buffer[..4].copy_from_slice(size.to_be_bytes().as_ref());
 
-                let checksum = crc32fast::hash(&buffer[8..]);
-                buffer[4..8].copy_from_slice(checksum.to_be_bytes().as_ref());
-            }
-        }
+        // Calculate and write the checksum to bytes 4-7
+        let checksum = crc32fast::hash(&buffer[8..]);
+        buffer[4..8].copy_from_slice(checksum.to_be_bytes().as_ref());
     }
 
-    fn try_decode(buffer: &mut BytesMut) -> Result<Option<Self>> {
+    fn try_read_buf(buffer: &mut BytesMut) -> Result<Option<Self>> {
         if buffer.len() < 8 {
             return Ok(None);
         }
@@ -62,27 +60,10 @@ impl Payload {
         // skip len & checksum
         buffer.advance(8);
 
-        Ok(Some(Self::Frame(
+        Ok(Some(
             proto::Frame::decode(&mut buffer.split_to(size))
                 .map_err(|_| Error::new(ErrorKind::InvalidData, "invalid frame"))?,
-        )))
-    }
-}
-
-async fn writeaf<T>(socket: &mut T, buffer: &[u8]) -> Result<()>
-where
-    T: AsyncWrite + Unpin + Send + 'static,
-{
-    #[allow(unused_variables)]
-    if let Err(e) = socket.write_all(buffer).await {
-        #[cfg(feature = "log")]
-        log::warn!("transport write error: {:?}", e);
-
-        Err(e)
-    } else {
-        let _ = socket.flush().await;
-
-        Ok(())
+        ))
     }
 }
 
@@ -131,15 +112,11 @@ where
                                 }
 
                                 loop {
-                                    match Payload::try_decode(&mut read_buffer){
+                                    match proto::Frame::try_read_buf(&mut read_buffer){
                                         Ok(payload) => {
-                                            if let Some(payload) = payload {
-                                                match payload {
-                                                    Payload::Frame(frame) => {
-                                                        if input_sender.send(Ok(frame)).is_err() {
-                                                            break 'a;
-                                                        }
-                                                    }
+                                            if let Some(frame) = payload {
+                                                if input_sender.send(Ok(frame)).is_err() {
+                                                    break 'a;
                                                 }
                                             } else {
                                                 break;
@@ -170,7 +147,7 @@ where
                     ret = output_receiver.recv() => {
                         if let Some(frame) = ret {
                             if let Err(e) = writeaf(&mut transport, {
-                                Payload::Frame(frame).encode(&mut send_buffer);
+                                frame.write_buf(&mut send_buffer);
 
                                 &send_buffer
                             }).await {

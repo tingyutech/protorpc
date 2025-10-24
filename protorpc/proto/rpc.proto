@@ -27,6 +27,8 @@ message EndOfStream {
     optional string error = 2;
 }
 
+message Close {}
+
 message Frame {
     uint64 id = 1;
     uint64 number = 2;
@@ -38,5 +40,6 @@ message Frame {
         ResponseHeader response_header = 7;
         Response response = 8;
         EndOfStream end_of_stream = 9;
+        Close close = 10;
     }
 }

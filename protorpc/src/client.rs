@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use prost::Message;
 use tokio::{
-    sync::{mpsc::unbounded_channel, oneshot},
+    sync::{mpsc::{unbounded_channel, UnboundedReceiver}, oneshot},
     time::Duration,
 };
 
@@ -16,9 +16,10 @@ use uuid::Uuid;
 use wasmtimer::tokio::timeout;
 
 use crate::{
-    OrderNumber, Stream, proto,
+    OrderNumber, Stream,
+    helper::{DropGuard, FrameBuilder, spawn},
+    proto,
     result::RpcError,
-    task::spawn,
     transport::{IOStream, Transport},
 };
 
@@ -83,16 +84,12 @@ where
         );
 
         // The overall process actually simulates HTTP, but with some differences.
-
         let order_number: OrderNumber = order_number.into();
-        let mut frame = proto::Frame {
-            service: req.service.to_string(),
-            method: req.method.to_string(),
-            payload: None,
-            ..Default::default()
-        };
-
-        frame.set_order_number(order_number);
+        let mut frame_builder = FrameBuilder::new(
+            req.service.to_string(),
+            req.method.to_string(),
+            order_number,
+        );
 
         // Response data stream channel.
         let (response_stream_sender, response_stream_receiver) = unbounded_channel();
@@ -100,6 +97,9 @@ where
         // Channel for delivering the response header.
         let (response_header_sender, response_header_receiver) =
             oneshot::channel::<Result<HashMap<String, String>, RpcError>>();
+
+        // Channel for delivering the close signal.
+        let (close_sender, mut close_receiver) = unbounded_channel::<()>();
 
         #[cfg(feature = "log")]
         log::debug!(
@@ -111,12 +111,8 @@ where
 
         // First send the request header, similar to an HTTP request header.
         {
-            frame.payload = Some(proto::frame::Payload::RequestHeader(proto::RequestHeader {
-                metadata: req.metadata,
-            }));
-
             socket
-                .send(frame.clone())
+                .send(frame_builder.request_header(req.metadata))
                 .map_err(|_| RpcError::terminated())?;
 
             #[cfg(feature = "log")]
@@ -127,9 +123,28 @@ where
             );
         }
 
+        // When both the req and res are dropped, a Close packet needs to be sent
+        //to notify the other side that the stream is closed.
+        let drop_guard = {
+            let socket = socket.clone();
+            let frame = frame_builder.close();
+
+            DropGuard::new(move || {
+                log::info!(
+                    "client request close, service = {}, method = {}",
+                    frame.service,
+                    frame.method
+                );
+
+                let _ = socket.send(frame);
+            })
+        };
+
+        // A special part for handling the response data packet from the server.
         {
             let mut response_header_sender = Some(response_header_sender);
             let socket = socket.clone();
+            let drop_guard = drop_guard.clone();
 
             spawn(async move {
                 let mut endofstream = false;
@@ -198,6 +213,11 @@ where
 
                                 break;
                             }
+                            proto::frame::Payload::Close(_) => {
+                                let _ = close_sender.send(());
+
+                                break;
+                            }
                             _ => (),
                         }
                     }
@@ -222,76 +242,86 @@ where
                     req.method,
                     order_number
                 );
+
+                drop_guard.drop();
             });
         }
 
+        // A special part for sending the request data packet to the server.
         {
             spawn(async move {
                 let mut serial_number = 0;
-                let mut result = None;
+                let mut result = Ok(());
 
-                while let Some(payload) = req.request.next().await {
-                    #[cfg(feature = "log")]
-                    log::debug!(
-                        "client core send a request payload, service = {}, order id = {:?}",
-                        frame.service,
-                        order_number
-                    );
+                loop {
+                    tokio::select! {
+                        payload = req.request.next() => {
+                            #[cfg(feature = "log")]
+                            log::debug!("client request next() returned: {:?}", payload.is_some());
+                            
+                            match payload {
+                                Some(payload) => {
+                                    #[cfg(feature = "log")]
+                                    log::debug!(
+                                        "client core send a request payload, service = {}, order id = {:?}",
+                                        frame_builder.service,
+                                        order_number
+                                    );
 
-                    let payload = match payload {
-                        Ok(it) => it,
-                        Err(e) => {
-                            result = Some(e);
+                                    let payload = match payload {
+                                        Ok(it) => it,
+                                        Err(e) => {
+                                            result = Err(e);
+                                            
+                                            break;
+                                        }
+                                    };
 
+                                    #[allow(unused_variables)]
+                                    if let Err(e) = socket.send(frame_builder.request(serial_number, payload.encode_to_vec())) {
+                                        #[cfg(feature = "log")]
+                                        log::warn!(
+                                            "client core failed to send a response frame, service = {}, order id = {:?}, error = {:?}",
+                                            frame_builder.service,
+                                            order_number,
+                                            e
+                                        );
+
+                                        break;
+                                    }
+
+                                    serial_number += 1;
+                                }
+                                None => {
+                                    #[cfg(feature = "log")]
+                                    log::debug!("client request stream ended, service = {}, method = {}", frame_builder.service, req.method);
+                                    
+                                    break;
+                                }
+                            }
+                        }
+                        Some(_) = wait_maybe_closed_channel(&mut close_receiver) => {
                             break;
                         }
-                    };
-
-                    frame.payload = Some(proto::frame::Payload::Request(proto::Request {
-                        serial_number,
-                        payload: payload.encode_to_vec(),
-                    }));
-
-                    serial_number += 1;
-
-                    #[allow(unused_variables)]
-                    if let Err(e) = socket.send(frame.clone()) {
-                        #[cfg(feature = "log")]
-                        log::warn!(
-                            "client core failed to send a response frame, service = {}, order id = {:?}, error = {:?}",
-                            frame.service,
-                            order_number,
-                            e
-                        );
-
-                        break;
                     }
                 }
 
                 #[cfg(feature = "log")]
                 log::info!(
                     "requests stream closed, service = {}, method = {}, order id = {:?}",
-                    frame.service,
+                    frame_builder.service,
                     req.method,
                     order_number
                 );
 
                 // After the stream is closed, an `EndOfStream` packet needs to be sent.
                 {
-                    frame.payload = Some(proto::frame::Payload::EndOfStream(
-                        result
-                            .map(|it| proto::EndOfStream {
-                                success: false,
-                                error: Some(RpcError::from(it).to_string()),
-                            })
-                            .unwrap_or_else(|| proto::EndOfStream {
-                                success: true,
-                                error: None,
-                            }),
-                    ));
-
-                    let _ = socket.send(frame.clone());
+                    #[cfg(feature = "log")]
+                    log::debug!("client sending EndOfStream frame, service = {}, method = {}", frame_builder.service, req.method);
+                    let _ = socket.send(frame_builder.end_of_stream(&result));
                 }
+
+                drop_guard.drop();
             });
         }
 
@@ -308,4 +338,12 @@ where
             metadata,
         ))
     }
+}
+
+async fn wait_maybe_closed_channel(receiver: &mut UnboundedReceiver<()>) -> Option<()> {
+    if receiver.is_closed() {
+        std::future::pending::<()>().await;
+    }
+
+    receiver.recv().await
 }
